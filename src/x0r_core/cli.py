@@ -17,6 +17,14 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 
+
+@app.command("security-demo")
+def security_demo() -> None:
+    """Deterministic mock testing: denied and permitted tool execution, offline."""
+    from .security_demo import run_isolated
+
+    run_isolated()
+
 BANNER = r"""
   __  __  ___  ____      ____
   \ \/ / / _ \|  _ \    / ___|___  _ __ ___
