@@ -165,3 +165,7 @@ Built by [X0R Labs](https://x0r-labs.github.io/site/) — AI software, built to 
 Execution now checks an operator-controlled built-in tool allowlist before invoking a handler. Policy denials stop a run as `blocked`; execution limits return `limit_exceeded`. HTTP is denied by the operator policy by default, including for agents that list it. Custom tools require explicit policy implementation.
 
 Read [the security model and known limits](docs/SECURITY-MODEL.md) before deployment. Quotas are not hard spend caps; full trace redaction, end-user RBAC and connection-bound HTTP validation remain unfinished. Use synthetic data for evaluation.
+
+### Resource and evaluation follow-up
+
+HTTP fetching now streams under byte/time limits and rejects compressed responses and redirects. Calculator evaluation and API inputs have explicit limits. Evaluations cannot count blocked/failed/limited runs as passes, and quota stops preserve prior completed usage records. Read [the security model](docs/SECURITY-MODEL.md) for compatibility details and the remaining DNS, privacy and concurrent-budget gaps.

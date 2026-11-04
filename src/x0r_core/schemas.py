@@ -44,7 +44,7 @@ class WorkspaceCreated(BaseModel):
 
 class DocumentIn(BaseModel):
     title: str = Field(min_length=1, max_length=300)
-    content: str = Field(min_length=1)
+    content: str = Field(min_length=1, max_length=1_000_000)
     source: str = "api"
     mime: str = "text/plain"
     meta: dict[str, Any] = Field(default_factory=dict)
@@ -69,7 +69,7 @@ class IngestOut(BaseModel):
 # ── retrieval ────────────────────────────────────────────────────────────────
 
 class SearchIn(BaseModel):
-    query: str = Field(min_length=1)
+    query: str = Field(min_length=1, max_length=8000)
     k: int = Field(default=5, ge=1, le=20)
 
 
@@ -84,7 +84,7 @@ class SearchOut(BaseModel):
 class AgentIn(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     description: str = ""
-    system_prompt: str = "You are a helpful assistant."
+    system_prompt: str = Field(default="You are a helpful assistant.", max_length=32_000)
     provider: str | None = None
     model: str | None = None
     tools: list[str] = Field(default_factory=lambda: ["knowledge_search"])
@@ -106,7 +106,7 @@ class AgentOut(ORMModel):
 
 
 class RunIn(BaseModel):
-    input: str = Field(min_length=1)
+    input: str = Field(min_length=1, max_length=32_000)
 
 
 class RunOut(ORMModel):
@@ -126,14 +126,14 @@ class RunOut(ORMModel):
 # ── evals ────────────────────────────────────────────────────────────────────
 
 class EvalCaseIn(BaseModel):
-    input: str = Field(min_length=1)
+    input: str = Field(min_length=1, max_length=32_000)
     expected: str = ""
 
 
 class EvalSuiteIn(BaseModel):
     agent_id: str
     name: str = "suite"
-    cases: list[EvalCaseIn] = Field(min_length=1)
+    cases: list[EvalCaseIn] = Field(min_length=1, max_length=100)
 
 
 class EvalSuiteOut(ORMModel):

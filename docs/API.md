@@ -132,3 +132,9 @@ headers. The check happens **before** the model call, so a blocked run costs not
 ## Execution policy outcomes
 
 The run response may return `blocked` for a tool policy denial or `limit_exceeded` for a step/tool-call limit. These are HTTP 200 run records with a non-success status; clients must inspect `status`. Policy decisions appear as `type: policy` steps. Existing tools must be permitted by both the agent and `X0R_OPERATOR_TOOL_ALLOWLIST`; HTTP additionally needs the host allowlist. See [SECURITY-MODEL.md](SECURITY-MODEL.md) for behavior and limitations.
+
+### Input and evaluation limits
+
+Document content: 1,000,000 characters. Run/evaluation input and agent system prompts: 32,000 characters. Search queries: 8,000 characters. Evaluation suites: up to 100 cases. Invalid payloads return 422; enforce a body-size limit at ingress as well.
+
+Evaluation results include run `status`. Only succeeded runs can pass; blocked, failed and limit-exceeded cases score zero. A quota stop returns 429 while preserving earlier completed run/usage records; inspect `/v1/runs` and `/v1/usage` for that work. This does not introduce atomic budget reservations or a hard cost guarantee.

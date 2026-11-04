@@ -307,7 +307,8 @@ async def run_eval_suite(
             session, workspace, suite, threshold=payload.threshold
         )
     except usage_service.QuotaExceeded as exc:
-        await session.rollback()
+        # Earlier cases may already have consumed tokens. Preserve their runs and meter.
+        await session.commit()
         raise HTTPException(status_code=429, detail=str(exc)) from exc
 
     await session.commit()
