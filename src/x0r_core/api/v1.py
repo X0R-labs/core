@@ -112,7 +112,7 @@ async def upload_document(
     title: str | None = Query(default=None),
 ):
     settings = get_settings()
-    raw = await file.read()
+    raw = await file.read(settings.max_upload_bytes + 1)
     if len(raw) > settings.max_upload_bytes:
         raise HTTPException(status_code=413, detail="File too large.")
     try:

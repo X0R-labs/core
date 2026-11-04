@@ -44,7 +44,7 @@ dev = [
 x0r = "x0r_core.cli:app"
 
 [project.urls]
-Homepage = "https://xor.ct.ws"
+Homepage = "https://x0r-labs.github.io/site/"
 Repository = "https://github.com/X0R-labs/core"
 Issues = "https://github.com/X0R-labs/core/issues"
 

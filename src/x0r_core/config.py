@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     request_timeout: float = 60.0
 
     http_tool_allowlist: str = ""
+    operator_tool_allowlist: str = "knowledge_search,calculator"
+    max_tool_calls_per_step: int = 8
     max_upload_bytes: int = 5 * 1024 * 1024
     bootstrap_token: str = ""
     cors_origins: str = "*"

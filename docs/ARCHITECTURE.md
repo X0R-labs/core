@@ -94,3 +94,7 @@ fast up to roughly 10⁴–10⁵ chunks.
 Streaming, a UI, pgvector, Stripe, SSO. Each is a week of work, not an architectural
 change. They are listed in the README roadmap because pretending v0.1 has them would be
 the dishonest thing to ship.
+
+## Security update
+
+Before handler dispatch, `policy.authorize_tool` validates workspace, agent and operator grants, built-in tool arguments and HTTP destination constraints. Policy denials stop execution. Step limits no longer produce a successful status. The [security model](SECURITY-MODEL.md) qualifies the posture above: DNS validation is not connection-bound, quotas can overshoot, raw transcripts need protection, and permissions do not constitute end-user RBAC.
