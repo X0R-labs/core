@@ -114,7 +114,7 @@ behind the same contract when semantic grading matters.
 | --- | --- | --- |
 | `GET` | `/v1/usage` | Current period, quota, remaining, percent, breakdown by kind. |
 
-Exceeding `monthly_token_quota` returns `429` with `X-Quota-Used` and `X-Quota-Limit`
+Starting a run after recorded usage reaches `monthly_token_quota` returns `429` with `X-Quota-Used` and `X-Quota-Limit`
 headers. The check happens **before** the model call, so a blocked run costs nothing.
 
 ## Errors
@@ -128,3 +128,7 @@ headers. The check happens **before** the model call, so a blocked run costs not
 | `415` | Upload is not UTF-8 text |
 | `429` | Monthly token quota exhausted |
 | `502` | The agent run failed; body includes `run_id` for inspection |
+
+## Execution policy outcomes
+
+The run response may return `blocked` for a tool policy denial or `limit_exceeded` for a step/tool-call limit. These are HTTP 200 run records with a non-success status; clients must inspect `status`. Policy decisions appear as `type: policy` steps. Existing tools must be permitted by both the agent and `X0R_OPERATOR_TOOL_ALLOWLIST`; HTTP additionally needs the host allowlist. See [SECURITY-MODEL.md](SECURITY-MODEL.md) for behavior and limitations.

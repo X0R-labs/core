@@ -35,7 +35,7 @@ infrastructure and pointed at any OpenAI-compatible model endpoint.
 | "How do agents call our stuff?" | A bounded tool loop with a registry you can extend |
 | "How do we bill tenants?" | API keys, workspaces, quotas, per-run token accounting |
 | "How do we know it still works?" | Eval suites with pass rates, stored per case |
-| "Can we self-host it?" | FastAPI + SQLAlchemy. SQLite for a demo, Postgres for production |
+| "Can we self-host it?" | FastAPI + SQLAlchemy. SQLite for a demo, Postgres support (validate your deployment) |
 | "Are we locked to OpenAI?" | Any OpenAI-compatible base URL: OpenAI, OpenRouter, Groq, vLLM, Ollama |
 
 ## What's in the box
@@ -158,4 +158,10 @@ Apache-2.0. Use it, fork it, run it commercially.
 
 ---
 
-Built by [X0R Labs](https://xor.ct.ws) — AI software, built to be the difference.
+Built by [X0R Labs](https://x0r-labs.github.io/site/) — AI software, built to be the difference.
+
+## Security iteration
+
+Execution now checks an operator-controlled built-in tool allowlist before invoking a handler. Policy denials stop a run as `blocked`; execution limits return `limit_exceeded`. HTTP is denied by the operator policy by default, including for agents that list it. Custom tools require explicit policy implementation.
+
+Read [the security model and known limits](docs/SECURITY-MODEL.md) before deployment. Quotas are not hard spend caps; full trace redaction, end-user RBAC and connection-bound HTTP validation remain unfinished. Use synthetic data for evaluation.

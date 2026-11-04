@@ -6,6 +6,7 @@ from time import perf_counter
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import Agent, Run, Workspace
+from ..policy import authorize_tool
 from ..providers import Completion, Provider, Usage, build_provider
 from ..tools import ToolContext
 from ..tools import resolve as resolve_tools
@@ -55,6 +56,7 @@ async def run_agent(
     await session.flush()
 
     final = ""
+    outcome = "succeeded"
     try:
         for _ in range(max(1, agent.max_steps)):
             completion: Completion = await active.complete(
@@ -99,9 +101,32 @@ async def run_agent(
                 final = completion.content or ""
                 break
 
+            if len(completion.tool_calls) > _settings().max_tool_calls_per_step:
+                outcome = "limit_exceeded"
+                final = "Stopped: too many tool calls in one step."
+                steps.append({"type": "limit", "reason": "tool_call_limit"})
+                break
+
             by_name = {tool.name: tool for tool in tools}
             ctx = ToolContext(session=session, workspace_id=workspace.id, settings=_settings())
             for call in completion.tool_calls:
+                decision = authorize_tool(
+                    workspace_id=workspace.id,
+                    agent_workspace_id=agent.workspace_id,
+                    agent_tools=agent.tools or [],
+                    tool_name=call.name,
+                    arguments=call.arguments,
+                    settings=ctx.settings,
+                )
+                steps.append({
+                    "type": "policy", "version": "1", "tool": call.name,
+                    "allowed": decision.allowed, "reason": decision.reason,
+                    "workspace_id": workspace.id,
+                })
+                if not decision.allowed:
+                    outcome = "blocked"
+                    final = "Stopped: tool action denied by execution policy."
+                    break
                 tool = by_name.get(call.name)
                 if tool is None:
                     result: object = {"error": f"unknown tool {call.name!r}"}
@@ -127,11 +152,14 @@ async def run_agent(
                         "content": _bounded(json.dumps(result, default=str)),
                     }
                 )
+            if outcome == "blocked":
+                break
         else:
+            outcome = "limit_exceeded"
             final = "Stopped: the agent reached its step limit before finishing."
             steps.append({"type": "limit", "max_steps": agent.max_steps})
 
-        run.status = "succeeded"
+        run.status = outcome
         run.output = final
     except Exception as exc:  # noqa: BLE001
         run.status = "failed"
