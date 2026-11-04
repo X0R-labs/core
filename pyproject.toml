@@ -1,0 +1,65 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "x0r-core"
+version = "0.1.0"
+description = "Self-hosted AI agent backend: ingest documents, run tool-calling agents, meter every token."
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.11"
+authors = [{ name = "X0R Labs", email = "hello@x0rlabs.com" }]
+keywords = ["ai", "agents", "rag", "fastapi", "llm", "self-hosted"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: FastAPI",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "sqlalchemy[asyncio]>=2.0.30",
+    "aiosqlite>=0.20.0",
+    "pydantic>=2.7.0",
+    "pydantic-settings>=2.3.0",
+    "httpx>=0.27.0",
+    "python-multipart>=0.0.9",
+    "typer>=0.12.0",
+]
+
+[project.optional-dependencies]
+postgres = ["asyncpg>=0.29.0"]
+dev = [
+    "pytest>=8.2.0",
+    "pytest-asyncio>=0.23.0",
+    "ruff>=0.5.0",
+]
+
+[project.scripts]
+x0r = "x0r_core.cli:app"
+
+[project.urls]
+Homepage = "https://xor.ct.ws"
+Repository = "https://github.com/X0R-labs/core"
+Issues = "https://github.com/X0R-labs/core/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/x0r_core"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["B008"]

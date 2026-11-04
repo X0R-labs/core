@@ -1,0 +1,161 @@
+# X0R Core
+
+**The AI agent backend you own.**
+
+Self-hosted. Provider-agnostic. Metered.
+
+X0R Core is a small, complete backend for putting AI agents on top of a company's own
+documents: ingest, retrieve, run tool-calling agents, grade them, and meter every token —
+without handing your data or your bill to a platform you don't control.
+
+```bash
+pip install -e ".[dev]"
+x0r seed        # demo workspace: documents + agent + eval suite, no API key needed
+x0r serve       # http://127.0.0.1:8000/docs
+```
+
+It runs with **zero configuration** — no API key, no database server, no Docker. The
+built-in `mock` provider exercises the whole pipeline offline so you can see it work
+before you spend a cent.
+
+---
+
+## Why this exists
+
+Most teams that try to ship an AI feature end up rebuilding the same six things:
+ingestion, retrieval, a tool loop, per-tenant auth, usage accounting, and a way to prove
+quality didn't regress. Then they couple all of it to one vendor's SDK.
+
+X0R Core is those six things, written once, designed to be run inside your own
+infrastructure and pointed at any OpenAI-compatible model endpoint.
+
+| Problem | What Core gives you |
+| --- | --- |
+| "Where do we put the documents?" | Chunking + embeddings + hybrid retrieval, in your database |
+| "How do agents call our stuff?" | A bounded tool loop with a registry you can extend |
+| "How do we bill tenants?" | API keys, workspaces, quotas, per-run token accounting |
+| "How do we know it still works?" | Eval suites with pass rates, stored per case |
+| "Can we self-host it?" | FastAPI + SQLAlchemy. SQLite for a demo, Postgres for production |
+| "Are we locked to OpenAI?" | Any OpenAI-compatible base URL: OpenAI, OpenRouter, Groq, vLLM, Ollama |
+
+## What's in the box
+
+- **Workspaces & API keys** — `x0r_<prefix>_<secret>`, hashed at rest, revocable.
+- **Ingestion** — JSON or UTF-8 file upload; paragraph-aware chunking with overlap.
+- **Retrieval** — hybrid vector + keyword search that degrades gracefully when
+  embeddings are unavailable.
+- **Agents** — system prompt, model, temperature, step limit, tool allowlist.
+- **Tools** — `knowledge_search`, safe `calculator`, and an allowlisted, SSRF-guarded
+  `http_get`.
+- **Runs** — full transcript persisted: every model call, every tool call, every result.
+- **Metering** — monthly token quota per workspace, enforced with `429`, plus a usage
+  breakdown by kind.
+- **Evals** — golden-question suites scored per case, with pass rate.
+
+## Quickstart
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+
+cp .env.example .env
+x0r seed
+x0r serve
+```
+
+The seed command prints an API key. Ask the demo agent a question:
+
+```bash
+export X0R_KEY=x0r_...
+
+curl -s localhost:8000/v1/agents/agt_.../run \
+  -H "Authorization: Bearer $X0R_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"input":"Can I get a refund after 45 days?"}' | jq
+```
+
+You get back the answer, the retrieved sources, and the token cost:
+
+```json
+{
+  "status": "succeeded",
+  "output": "Here is what the knowledge base says:\n\n- Refunds are available within 30 days...",
+  "steps": [
+    {"type": "model", "tool_calls": [{"name": "knowledge_search"}]},
+    {"type": "tool", "tool": "knowledge_search", "result": {"count": 2}},
+    {"type": "model", "content": "..."}
+  ],
+  "prompt_tokens": 412,
+  "completion_tokens": 96,
+  "latency_ms": 3
+}
+```
+
+## Connecting a real model
+
+```bash
+# Any OpenAI-compatible endpoint.
+export X0R_PROVIDER=openai_compatible
+export X0R_OPENAI_BASE_URL=https://api.openai.com/v1   # or https://openrouter.ai/api/v1
+export X0R_OPENAI_API_KEY=sk-...
+export X0R_CHAT_MODEL=gpt-4o-mini
+export X0R_EMBEDDING_MODEL=text-embedding-3-small
+x0r serve
+```
+
+Works the same against a local model:
+
+```bash
+export X0R_OPENAI_BASE_URL=http://localhost:11434/v1   # Ollama
+export X0R_OPENAI_API_KEY=ollama
+export X0R_CHAT_MODEL=llama3.1
+```
+
+## Production
+
+SQLite is the demo/default. Postgres is the production path:
+
+```bash
+pip install -e ".[postgres]"
+export X0R_DATABASE_URL=postgresql+asyncpg://x0r:x0r@localhost:5432/x0r
+```
+
+Docker:
+
+```bash
+docker compose up --build
+```
+
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the design and the scaling path
+(pgvector, queues, multi-region), and [`docs/API.md`](docs/API.md) for the endpoint map.
+
+## Tests
+
+```bash
+pytest -q
+```
+
+The suite covers auth, ingestion, retrieval, the agent tool loop, tenant isolation,
+quota enforcement, and eval scoring — all against the mock provider, so it runs offline
+in about a second.
+
+## What this is not (yet)
+
+X0R Core v0.1 is a **strong foundation**, not a finished SaaS. Deliberately out of scope:
+
+- pgvector-backed ANN search (today: in-process cosine over the workspace's chunks)
+- Streaming responses and token-by-token output
+- A UI (the API + OpenAPI docs are the product surface)
+- Billing integration (Stripe is a thin layer over `/v1/usage`)
+- SSO / RBAC beyond workspace-scoped keys
+
+Those are the roadmap. If you need one of them for a specific deployment, that's the
+conversation.
+
+## License
+
+Apache-2.0. Use it, fork it, run it commercially.
+
+---
+
+Built by [X0R Labs](https://xor.ct.ws) — AI software, built to be the difference.

@@ -1,0 +1,35 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: x0r
+      POSTGRES_PASSWORD: x0r
+      POSTGRES_DB: x0r
+    ports:
+      - "5432:5432"
+    volumes:
+      - x0r_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U x0r -d x0r"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      X0R_ENV: production
+      X0R_DATABASE_URL: postgresql+asyncpg://x0r:x0r@db:5432/x0r
+      X0R_PROVIDER: ${X0R_PROVIDER:-mock}
+      X0R_OPENAI_BASE_URL: ${X0R_OPENAI_BASE_URL:-https://api.openai.com/v1}
+      X0R_OPENAI_API_KEY: ${X0R_OPENAI_API_KEY:-}
+      X0R_CHAT_MODEL: ${X0R_CHAT_MODEL:-gpt-4o-mini}
+      X0R_BOOTSTRAP_TOKEN: ${X0R_BOOTSTRAP_TOKEN:-}
+    ports:
+      - "8000:8000"
+
+volumes:
+  x0r_pgdata:
