@@ -30,4 +30,4 @@ jobs:
         run: pytest -q
         env:
           X0R_PROVIDER: mock
-          X0R_DATABASE_URL: sqlite+aiosqlite:///:memory:
+          X0R_DATABASE_URL: "sqlite+aiosqlite:///:memory:"
