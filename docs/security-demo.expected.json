@@ -1,0 +1,49 @@
+{
+  "demonstration": "deterministic mock testing",
+  "system": "our own experimental X0R Core; not a client audit",
+  "provider": "mock",
+  "data": "synthetic; temporary in-memory database",
+  "cases": [
+    {
+      "case": "operator_denied",
+      "operator_tool_allowlist": "calculator",
+      "agent_tools": [
+        "knowledge_search"
+      ],
+      "requested_tool": "knowledge_search",
+      "status": "blocked",
+      "policy": [
+        {
+          "version": "1",
+          "tool": "knowledge_search",
+          "allowed": false,
+          "reason": "not_granted_by_operator"
+        }
+      ],
+      "handler_calls": 0,
+      "tool_steps": 0,
+      "answer_contains_24_months": false
+    },
+    {
+      "case": "permitted",
+      "operator_tool_allowlist": "knowledge_search,calculator",
+      "agent_tools": [
+        "knowledge_search"
+      ],
+      "requested_tool": "knowledge_search",
+      "status": "succeeded",
+      "policy": [
+        {
+          "version": "1",
+          "tool": "knowledge_search",
+          "allowed": true,
+          "reason": "granted"
+        }
+      ],
+      "handler_calls": 1,
+      "tool_steps": 1,
+      "answer_contains_24_months": true
+    }
+  ],
+  "checks": "passed"
+}

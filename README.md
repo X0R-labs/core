@@ -20,6 +20,15 @@ before you spend a cent.
 
 ---
 
+## Reproducible security demonstration
+
+Run `x0r security-demo` after installation for **deterministic mock testing** of an
+operator-denied lookup (zero handler entries) and a permitted lookup (one real handler
+entry). It uses synthetic data and a disposable database, with no provider API call.
+See the [demo command and expected output](docs/SECURITY-REVIEW-DEMO.md) and
+[sample review](docs/SAMPLE-SECURITY-REVIEW.md). This demonstrates our own experimental
+system, not a client engagement, independent audit or production security guarantee.
+
 ## Why this exists
 
 Most teams that try to ship an AI feature end up rebuilding the same six things:
@@ -45,8 +54,8 @@ infrastructure and pointed at any OpenAI-compatible model endpoint.
 - **Retrieval** — hybrid vector + keyword search that degrades gracefully when
   embeddings are unavailable.
 - **Agents** — system prompt, model, temperature, step limit, tool allowlist.
-- **Tools** — `knowledge_search`, safe `calculator`, and an allowlisted, SSRF-guarded
-  `http_get`.
+- **Tools** — `knowledge_search`, bounded `calculator`, and disabled-by-default `http_get`
+  with host/DNS checks and known connection-validation gaps (see the security model).
 - **Runs** — full transcript persisted: every model call, every tool call, every result.
 - **Metering** — monthly token quota per workspace, enforced with `429`, plus a usage
   breakdown by kind.

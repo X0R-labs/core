@@ -115,7 +115,8 @@ behind the same contract when semantic grading matters.
 | `GET` | `/v1/usage` | Current period, quota, remaining, percent, breakdown by kind. |
 
 Starting a run after recorded usage reaches `monthly_token_quota` returns `429` with `X-Quota-Used` and `X-Quota-Limit`
-headers. The check happens **before** the model call, so a blocked run costs nothing.
+headers. Quota admission rejection happens **before** the model call. A tool-policy
+denial follows a model tool request and can still incur model usage.
 
 ## Errors
 

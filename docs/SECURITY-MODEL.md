@@ -34,7 +34,7 @@ Policy events are ordinary database records, not tamper-evident forensic evidenc
 ## Next independently testable work
 
 1. Atomic budget reservation and reconciliation, including failure paths and concurrent runs.
-2. Connection-bound HTTP destination validation and streaming byte/time limits.
+2. Connection-bound HTTP destination validation and enforced network egress.
 3. Redaction, evidence access controls, retention and deletion.
 4. Caller/resource permissions, then real-model adversarial tests with explicit cost limits.
 
@@ -51,3 +51,7 @@ Document content is limited to 1,000,000 characters; run/evaluation input and ag
 Evaluation cases cannot pass unless their run succeeded, including with threshold zero. Blocked, failed and limit-exceeded runs score zero and report their execution status. If a later case reaches the quota admission check, earlier completed runs and recorded usage are committed rather than lost in rollback. A quota stop still returns HTTP 429; retrieve the existing run/usage records to inspect partial work. Quotas remain admission checks, not atomic hard spend caps.
 
 CI uses read-only repository permissions, checkout without persisted credentials, Node 24-based actions pinned to resolved commit SHAs, and Ubuntu 24.04 to avoid an unplanned runner-image migration.
+
+## Reproducible boundary demonstration
+
+`x0r security-demo` uses deterministic mock testing and synthetic data to compare denied and permitted knowledge lookups, counting handler entries in a disposable process. See [reproduction and evidence](SECURITY-REVIEW-DEMO.md) and the [sample review](SAMPLE-SECURITY-REVIEW.md). This is our own experimental system, not an independent audit or real-model prompt-injection evaluation.
