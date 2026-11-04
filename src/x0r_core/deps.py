@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from secrets import compare_digest
 from typing import Annotated
 
 from fastapi import Depends, Header, HTTPException, status
@@ -69,5 +70,5 @@ async def require_bootstrap(
             status_code=403,
             detail="Workspace creation is disabled. Set X0R_BOOTSTRAP_TOKEN or use the CLI.",
         )
-    if x_bootstrap_token != expected:
+    if not compare_digest((x_bootstrap_token or "").encode(), expected.encode()):
         raise HTTPException(status_code=403, detail="Invalid bootstrap token.")

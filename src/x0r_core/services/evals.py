@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import Agent, EvalCase, EvalSuite, Workspace
-from .agents import run_agent
+from .agents import AgentRunError, run_agent
 
 _WORD = re.compile(r"[a-z0-9]+")
 
@@ -47,9 +47,12 @@ async def run_suite(
     results = []
     passed = 0
     for case in cases:
-        run = await run_agent(session, workspace, agent, case.input)
-        score = similarity(run.output, case.expected)
-        ok = score >= threshold
+        try:
+            run = await run_agent(session, workspace, agent, case.input)
+        except AgentRunError as exc:
+            run = exc.run
+        score = similarity(run.output, case.expected) if run.status == "succeeded" else 0.0
+        ok = run.status == "succeeded" and score >= threshold
         passed += int(ok)
         case.last_output = run.output
         case.score = round(score, 4)
@@ -63,6 +66,7 @@ async def run_suite(
                 "score": round(score, 4),
                 "passed": ok,
                 "run_id": run.id,
+                "status": run.status,
             }
         )
 
