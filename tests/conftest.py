@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-TEST_DIR = Path(tempfile.mkdtemp(prefix="x0r-test-", dir="/tmp/opencode"))
+TEST_DIR = Path(tempfile.mkdtemp(prefix="x0r-test-"))
 os.environ["X0R_DATABASE_URL"] = f"sqlite+aiosqlite:///{TEST_DIR / 'test.db'}"
 os.environ["X0R_PROVIDER"] = "mock"
 os.environ["X0R_BOOTSTRAP_TOKEN"] = "test-bootstrap"
