@@ -5,7 +5,7 @@ import pytest
 from x0r_core.config import Settings, get_settings
 from x0r_core.db import get_session_factory
 from x0r_core.models import Agent, Workspace
-from x0r_core.policy import authorize_tool
+from x0r_core.policy import Decision, authorize_tool
 from x0r_core.providers import Completion, Provider, ToolCall
 from x0r_core.providers.mock import MockProvider
 from x0r_core.services.agents import run_agent
@@ -142,3 +142,91 @@ async def test_upload_limit_rejects_oversize(client, monkeypatch):
         "/v1/documents/upload", files={"file": ("test.txt", b"123456789", "text/plain")}
     )
     assert response.status_code == 413
+
+
+# ── Generic, schema-driven checks (policy v2) ───────────────────────────────
+
+async def _noop(ctx, **kwargs):
+    return {}
+
+
+ORDER_TOOL = Tool(
+    "order_lookup", "test",
+    {"type": "object", "properties": {"order_id": {"type": "string", "maxLength": 16}},
+     "required": ["order_id"]},
+    _noop,
+)
+
+
+def custom(arguments, *, allowlist="order_lookup", tool=ORDER_TOOL):
+    return authorize_tool(
+        workspace_id="a", agent_workspace_id="a", agent_tools=[tool.name],
+        tool_name=tool.name, arguments=arguments,
+        settings=Settings(operator_tool_allowlist=allowlist), registry={tool.name: tool},
+    )
+
+
+def test_custom_tool_is_allowed_when_granted():
+    assert custom({"order_id": "A-1001"}) == Decision(True, "granted")
+
+
+@pytest.mark.parametrize("arguments,reason", [
+    ({}, "invalid_arguments"),
+    ({"order_id": "   "}, "invalid_arguments"),
+    ({"order_id": 1001}, "invalid_arguments"),
+    ({"order_id": "x" * 17}, "invalid_arguments"),
+    ({"order_id": "A-1", "workspace_id": "b"}, "unexpected_arguments"),
+])
+def test_custom_tool_arguments_follow_its_schema(arguments, reason):
+    assert custom(arguments) == Decision(False, reason)
+
+
+def test_custom_tool_still_needs_operator_grant():
+    assert custom({"order_id": "A-1"}, allowlist="calculator").reason == (
+        "not_granted_by_operator"
+    )
+
+
+def test_unregistered_tool_is_denied():
+    result = authorize_tool(
+        workspace_id="a", agent_workspace_id="a", agent_tools=["ghost"], tool_name="ghost",
+        arguments={}, settings=Settings(operator_tool_allowlist="ghost"), registry={},
+    )
+    assert result == Decision(False, "unknown_tool")
+
+
+def test_failing_authorizer_denies():
+    def broken(arguments, settings):
+        raise RuntimeError("boom")
+
+    tool = Tool("hooked", "test", {"type": "object", "properties": {}}, _noop, broken)
+    assert custom({}, allowlist="hooked", tool=tool) == Decision(False, "authorizer_error")
+
+
+def test_untyped_property_is_denied():
+    tool = Tool("loose", "test", {"type": "object", "properties": {"x": {}}}, _noop)
+    assert custom({"x": "anything"}, allowlist="loose", tool=tool).reason == "invalid_arguments"
+
+
+@pytest.mark.parametrize("k", [0, 11, True, 2.0])
+def test_knowledge_search_k_bounds(k):
+    result = decision(agent_tools=["knowledge_search"], tool_name="knowledge_search",
+                      arguments={"query": "warranty", "k": k},
+                      settings=Settings(operator_tool_allowlist="knowledge_search"))
+    assert result == Decision(False, "invalid_arguments")
+
+
+@pytest.mark.parametrize("url,allowed", [
+    ("https://example.com/a", True),
+    ("https://evil.test/a", False),
+    ("https://user:pw@example.com/", False),
+    ("https://example.com:8443/", False),
+    ("ftp://example.com/", False),
+])
+def test_http_get_destination_hook(url, allowed):
+    result = decision(agent_tools=["http_get"], tool_name="http_get", arguments={"url": url},
+                      settings=Settings(operator_tool_allowlist="http_get",
+                                        http_tool_allowlist="example.com"))
+    assert result.allowed is allowed
+    if not allowed:
+        assert result.reason == "http_destination_denied"

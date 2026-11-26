@@ -123,6 +123,17 @@ class RunOut(ORMModel):
     created_at: datetime
 
 
+class PolicyDecisionOut(ORMModel):
+    id: int
+    run_id: str | None
+    agent_id: str | None
+    tool: str
+    allowed: bool
+    reason: str
+    policy_version: str
+    created_at: datetime
+
+
 # ── evals ────────────────────────────────────────────────────────────────────
 
 class EvalCaseIn(BaseModel):

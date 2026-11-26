@@ -96,6 +96,7 @@ A run returns:
 | --- | --- | --- |
 | `GET` | `/v1/runs` | `?limit=` 1–200, newest first. |
 | `GET` | `/v1/runs/{id}` | Full transcript. |
+| `GET` | `/v1/policy/decisions` | Tool authorization log, newest first. `?limit=` 1–200, `?allowed=true\|false`, `?run_id=`. No argument values. |
 
 ## Evals
 
