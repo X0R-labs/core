@@ -119,6 +119,27 @@ class Run(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class PolicyDecision(Base):
+    """Append-only record of every tool-call authorization, allowed or denied.
+
+    Arguments are deliberately not stored: they may carry user data.
+    """
+
+    __tablename__ = "policy_decisions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    run_id: Mapped[str | None] = mapped_column(ForeignKey("runs.id"), nullable=True, index=True)
+    agent_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    tool: Mapped[str] = mapped_column(String(120))
+    allowed: Mapped[bool] = mapped_column(Boolean)
+    reason: Mapped[str] = mapped_column(Text)  # custom hooks can return any reason
+    policy_version: Mapped[str] = mapped_column(String(10))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, index=True
+    )
+
+
 class UsageEvent(Base):
     __tablename__ = "usage_events"
 

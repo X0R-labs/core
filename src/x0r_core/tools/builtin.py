@@ -7,15 +7,19 @@ import math
 import operator
 import re
 import socket
+from urllib.parse import urlparse
 
 import httpx
 
-from ..services.retrieval import search
 from .base import Tool, ToolContext
 
 # ── knowledge_search ─────────────────────────────────────────────────────────
 
 async def knowledge_search(ctx: ToolContext, query: str, k: int = 4) -> dict:
+    # Imported here: services import tools, so a module-level import is circular
+    # whenever x0r_core.tools is imported first (as custom tools do).
+    from ..services.retrieval import search
+
     k = max(1, min(int(k), 10))
     hits = await search(ctx.session, ctx.workspace_id, query, k=k)
     return {
@@ -35,7 +39,10 @@ KNOWLEDGE_SEARCH = Tool(
         "type": "object",
         "properties": {
             "query": {"type": "string", "description": "What to look for."},
-            "k": {"type": "integer", "description": "Number of passages (1-10).", "default": 4},
+            "k": {
+                "type": "integer", "description": "Number of passages (1-10).",
+                "default": 4, "minimum": 1, "maximum": 10,
+            },
         },
         "required": ["query"],
     },
@@ -141,8 +148,6 @@ async def http_get(ctx: ToolContext, url: str) -> dict:
     if not allowed:
         return {"error": "http_get is disabled. Set X0R_HTTP_TOOL_ALLOWLIST to enable it."}
 
-    from urllib.parse import urlparse
-
     try:
         parsed = urlparse(url)
         host = (parsed.hostname or "").lower()
@@ -202,6 +207,23 @@ async def http_get(ctx: ToolContext, url: str) -> dict:
 
 
 
+def authorize_http_get(arguments: dict, settings) -> str | None:
+    """Deny destinations outside the operator's host allowlist before any request."""
+    try:
+        url = urlparse(arguments["url"])
+        if (
+            url.scheme not in {"http", "https"}
+            or url.hostname not in settings.allowed_http_hosts
+            or url.username is not None
+            or url.password is not None
+            or url.port not in {None, 80, 443}
+        ):
+            return "http_destination_denied"
+    except ValueError:
+        return "invalid_arguments"
+    return None
+
+
 HTTP_GET = Tool(
     name="http_get",
     description=(
@@ -214,6 +236,7 @@ HTTP_GET = Tool(
         "required": ["url"],
     },
     handler=http_get,
+    authorize=authorize_http_get,
 )
 
 REGISTRY: dict[str, Tool] = {

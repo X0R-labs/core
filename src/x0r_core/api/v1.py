@@ -7,7 +7,16 @@ from sqlalchemy import delete, func, select
 
 from ..config import get_settings
 from ..deps import ApiKeyDep, SessionDep, WorkspaceDep, require_bootstrap
-from ..models import Agent, Chunk, Document, EvalCase, EvalSuite, Run, Workspace
+from ..models import (
+    Agent,
+    Chunk,
+    Document,
+    EvalCase,
+    EvalSuite,
+    PolicyDecision,
+    Run,
+    Workspace,
+)
 from ..schemas import (
     AgentIn,
     AgentOut,
@@ -17,6 +26,7 @@ from ..schemas import (
     EvalSuiteIn,
     EvalSuiteOut,
     IngestOut,
+    PolicyDecisionOut,
     RunIn,
     RunOut,
     SearchIn,
@@ -252,6 +262,27 @@ async def list_runs(
             .where(Run.workspace_id == workspace.id)
             .order_by(Run.created_at.desc())
             .limit(limit)
+        )
+    ).scalars()
+    return list(rows)
+
+
+@router.get("/policy/decisions", response_model=list[PolicyDecisionOut])
+async def list_policy_decisions(
+    session: SessionDep,
+    workspace: WorkspaceDep,
+    limit: int = Query(default=50, ge=1, le=200),
+    allowed: bool | None = None,
+    run_id: str | None = None,
+):
+    query = select(PolicyDecision).where(PolicyDecision.workspace_id == workspace.id)
+    if allowed is not None:
+        query = query.where(PolicyDecision.allowed == allowed)
+    if run_id is not None:
+        query = query.where(PolicyDecision.run_id == run_id)
+    rows = (
+        await session.execute(
+            query.order_by(PolicyDecision.created_at.desc(), PolicyDecision.id.desc()).limit(limit)
         )
     ).scalars()
     return list(rows)

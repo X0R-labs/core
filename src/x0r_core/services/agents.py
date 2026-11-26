@@ -5,8 +5,8 @@ from time import perf_counter
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models import Agent, Run, Workspace
-from ..policy import authorize_tool
+from ..models import Agent, PolicyDecision, Run, Workspace
+from ..policy import POLICY_VERSION, authorize_tool
 from ..providers import Completion, Provider, Usage, build_provider
 from ..tools import ToolContext
 from ..tools import resolve as resolve_tools
@@ -117,12 +117,18 @@ async def run_agent(
                     tool_name=call.name,
                     arguments=call.arguments,
                     settings=ctx.settings,
+                    registry={tool.name: tool for tool in tools},
                 )
                 steps.append({
-                    "type": "policy", "version": "1", "tool": call.name,
+                    "type": "policy", "version": POLICY_VERSION, "tool": call.name,
                     "allowed": decision.allowed, "reason": decision.reason,
                     "workspace_id": workspace.id,
                 })
+                session.add(PolicyDecision(
+                    workspace_id=workspace.id, run_id=run.id, agent_id=agent.id,
+                    tool=call.name[:120], allowed=decision.allowed, reason=decision.reason,
+                    policy_version=POLICY_VERSION,
+                ))
                 if not decision.allowed:
                     outcome = "blocked"
                     final = "Stopped: tool action denied by execution policy."

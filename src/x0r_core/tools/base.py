@@ -17,6 +17,9 @@ class ToolContext:
 
 
 Handler = Callable[..., Awaitable[Any]]
+# Extra, tool-specific policy check run after the generic argument checks.
+# Returns a denial reason, or None to allow.
+Authorizer = Callable[[dict[str, Any], Settings], "str | None"]
 
 
 @dataclass
@@ -25,6 +28,7 @@ class Tool:
     description: str
     parameters: dict[str, Any]
     handler: Handler
+    authorize: Authorizer | None = None
 
     def schema(self) -> dict[str, Any]:
         return {

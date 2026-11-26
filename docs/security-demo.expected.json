@@ -14,7 +14,7 @@
       "status": "blocked",
       "policy": [
         {
-          "version": "1",
+          "version": "2",
           "tool": "knowledge_search",
           "allowed": false,
           "reason": "not_granted_by_operator"
@@ -34,7 +34,7 @@
       "status": "succeeded",
       "policy": [
         {
-          "version": "1",
+          "version": "2",
           "tool": "knowledge_search",
           "allowed": true,
           "reason": "granted"

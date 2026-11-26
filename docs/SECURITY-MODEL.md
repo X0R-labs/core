@@ -4,19 +4,22 @@ This is an experimental backend, not an end-user authorization platform or a cer
 
 ## Implemented boundary
 
-Before each built-in tool runs, the execution service checks:
+Before any tool runs, built-in or custom, the execution service checks (policy version 2):
 
 1. The agent belongs to the current workspace.
 2. The tool is granted in the agent configuration.
 3. The tool is permitted by the operator-controlled `X0R_OPERATOR_TOOL_ALLOWLIST`.
-4. The tool name is recognized and its argument shape and input length are accepted.
-5. HTTP destinations satisfy an additional host allowlist, URL credential and port check.
+4. The tool is registered.
+5. The arguments match the tool's own declared `parameters` schema: required fields present, declared types (`string`, `integer`, `number`, `boolean`), `minLength`/`maxLength`, `minimum`/`maximum`. Undeclared arguments, untyped properties, blank required strings and non-finite numbers (NaN, Infinity) are denied; strings are capped at 8000 characters.
+6. The tool's optional `authorize` hook allows the call. `http_get` uses this hook for its host allowlist, URL credential and port check. A hook that raises denies the call (`authorizer_error`).
 
-The default operator list is `knowledge_search,calculator`. HTTP remains unavailable unless an operator explicitly grants `http_get` and configures `X0R_HTTP_TOOL_ALLOWLIST`. Custom registry tools are denied until policy support is explicitly implemented. This is a deliberate compatibility change.
+The default operator list is `knowledge_search,calculator`. HTTP remains unavailable unless an operator explicitly grants `http_get` and configures `X0R_HTTP_TOOL_ALLOWLIST`. Custom registry tools run only after the operator adds them to the allowlist, and only with arguments their schema accepts. Schema checks constrain argument shape, not what a handler does with valid input: a custom tool's handler is trusted code and must enforce its own business rules.
+
+Policy version 1 (commit `8538e2d`, referenced by the sample review) denied all custom tools and hard-coded the built-in argument rules. Version 2 keeps the same reason codes and the same outcomes for built-in tools.
 
 Retrieved text and model-generated tool requests cannot modify operator settings through this execution path. This does not prevent all prompt injection: an agent can still misuse an otherwise permitted operation or generate misleading answers.
 
-Denials stop the run with `status="blocked"` without invoking the requested handler. A `policy` event records version, workspace, tool, allow/deny and reason; it omits argument values. Step or per-step tool-call limits produce `limit_exceeded`, not `succeeded`. Existing consumers must accept these additional status values. Operators can configure `X0R_MAX_TOOL_CALLS_PER_STEP` (default 8).
+Denials stop the run with `status="blocked"` without invoking the requested handler. A `policy` event in the run records version, workspace, tool, allow/deny and reason; it omits argument values. Each decision is also written to the append-only `policy_decisions` table and listed by `GET /v1/policy/decisions` (workspace-scoped; filter by `allowed` or `run_id`), again without argument values. Step or per-step tool-call limits produce `limit_exceeded`, not `succeeded`. Existing consumers must accept these additional status values. Operators can configure `X0R_MAX_TOOL_CALLS_PER_STEP` (default 8).
 
 ## Evidence limits
 

@@ -56,6 +56,10 @@ infrastructure and pointed at any OpenAI-compatible model endpoint.
 - **Agents** — system prompt, model, temperature, step limit, tool allowlist.
 - **Tools** — `knowledge_search`, bounded `calculator`, and disabled-by-default `http_get`
   with host/DNS checks and known connection-validation gaps (see the security model).
+  Add your own ([example](examples/custom_tool.py)): every call is checked against the
+  tool's declared argument schema and the operator allowlist before it runs.
+- **Policy decision log** — every tool authorization, allowed or denied, with its reason,
+  at `GET /v1/policy/decisions`.
 - **Runs** — full transcript persisted: every model call, every tool call, every result.
 - **Metering** — monthly token quota per workspace, enforced with `429`, plus a usage
   breakdown by kind.
@@ -134,6 +138,8 @@ Docker:
 ```bash
 docker compose up --build
 ```
+
+Where Core is heading: [`docs/GATEWAY-PLAN.md`](docs/GATEWAY-PLAN.md).
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the design and the scaling path
 (pgvector, queues, multi-region), and [`docs/API.md`](docs/API.md) for the endpoint map.

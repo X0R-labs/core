@@ -1,8 +1,13 @@
 """Add your own tool to X0R Core in ~20 lines.
 
-Drop a file like this next to the built-ins, register it, then allow it on an agent:
+Drop a file like this next to the built-ins, register it, then grant it twice:
 
-    tools: ["knowledge_search", "order_lookup"]
+    X0R_OPERATOR_TOOL_ALLOWLIST=knowledge_search,calculator,order_lookup   # operator
+    tools: ["knowledge_search", "order_lookup"]                            # agent
+
+The execution policy checks every call against `parameters` below (required fields,
+types, lengths, ranges; undeclared arguments are denied) before the handler runs.
+Add `authorize=` for rules the schema cannot express.
 
 Tools receive a ToolContext scoped to the calling workspace, so a tool can never read
 another tenant's data by accident.
@@ -32,7 +37,9 @@ ORDER_LOOKUP = Tool(
     description="Look up a customer order by id and return its status and ETA.",
     parameters={
         "type": "object",
-        "properties": {"order_id": {"type": "string", "description": "e.g. A-1001"}},
+        "properties": {
+            "order_id": {"type": "string", "maxLength": 32, "description": "e.g. A-1001"}
+        },
         "required": ["order_id"],
     },
     handler=order_lookup,
