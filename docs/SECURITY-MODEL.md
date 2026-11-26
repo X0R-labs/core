@@ -10,7 +10,7 @@ Before any tool runs, built-in or custom, the execution service checks (policy v
 2. The tool is granted in the agent configuration.
 3. The tool is permitted by the operator-controlled `X0R_OPERATOR_TOOL_ALLOWLIST`.
 4. The tool is registered.
-5. The arguments match the tool's own declared `parameters` schema: required fields present, declared types (`string`, `integer`, `number`, `boolean`), `minLength`/`maxLength`, `minimum`/`maximum`. Undeclared arguments, untyped properties and blank required strings are denied; strings are capped at 8000 characters.
+5. The arguments match the tool's own declared `parameters` schema: required fields present, declared types (`string`, `integer`, `number`, `boolean`), `minLength`/`maxLength`, `minimum`/`maximum`. Undeclared arguments, untyped properties, blank required strings and non-finite numbers (NaN, Infinity) are denied; strings are capped at 8000 characters.
 6. The tool's optional `authorize` hook allows the call. `http_get` uses this hook for its host allowlist, URL credential and port check. A hook that raises denies the call (`authorizer_error`).
 
 The default operator list is `knowledge_search,calculator`. HTTP remains unavailable unless an operator explicitly grants `http_get` and configures `X0R_HTTP_TOOL_ALLOWLIST`. Custom registry tools run only after the operator adds them to the allowlist, and only with arguments their schema accepts. Schema checks constrain argument shape, not what a handler does with valid input: a custom tool's handler is trusted code and must enforce its own business rules.

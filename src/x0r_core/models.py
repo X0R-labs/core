@@ -133,7 +133,7 @@ class PolicyDecision(Base):
     agent_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     tool: Mapped[str] = mapped_column(String(120))
     allowed: Mapped[bool] = mapped_column(Boolean)
-    reason: Mapped[str] = mapped_column(String(60))
+    reason: Mapped[str] = mapped_column(Text)  # custom hooks can return any reason
     policy_version: Mapped[str] = mapped_column(String(10))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, index=True

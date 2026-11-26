@@ -230,3 +230,24 @@ def test_http_get_destination_hook(url, allowed):
     assert result.allowed is allowed
     if not allowed:
         assert result.reason == "http_destination_denied"
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_non_finite_numbers_are_denied(value):
+    tool = Tool("ratio", "test", {"type": "object", "properties": {
+        "x": {"type": "number", "minimum": 0, "maximum": 1}}, "required": ["x"]}, _noop)
+    assert custom({"x": value}, allowlist="ratio", tool=tool) == Decision(
+        False, "invalid_arguments")
+
+
+def test_long_custom_reason_is_kept_as_text():
+    long_reason = "denied_by_" + "x" * 200
+    tool = Tool("strict", "test", {"type": "object", "properties": {}}, _noop,
+                lambda arguments, settings: long_reason)
+    assert custom({}, allowlist="strict", tool=tool) == Decision(False, long_reason)
+
+
+def test_non_string_reason_is_coerced():
+    tool = Tool("odd", "test", {"type": "object", "properties": {}}, _noop,
+                lambda arguments, settings: 403)
+    assert custom({}, allowlist="odd", tool=tool) == Decision(False, "403")

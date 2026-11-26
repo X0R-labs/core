@@ -17,6 +17,7 @@ unless the schema sets a lower ``maxLength``.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -51,7 +52,8 @@ def _valid_value(value: Any, spec: dict[str, Any], *, required: bool) -> bool:
     if kind == "integer":
         ok = type(value) is int
     elif kind == "number":
-        ok = type(value) in (int, float)
+        # json.loads accepts NaN/Infinity, and NaN slips past every range check.
+        ok = type(value) is int or (type(value) is float and math.isfinite(value))
     elif kind == "boolean":
         return type(value) is bool
     else:
@@ -110,5 +112,5 @@ def authorize_tool(
         except Exception:  # noqa: BLE001 - a failing hook denies, never allows
             reason = "authorizer_error"
         if reason is not None:
-            return Decision(False, reason)
+            return Decision(False, str(reason))
     return Decision(True, "granted")
