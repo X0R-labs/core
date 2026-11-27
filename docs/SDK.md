@@ -52,11 +52,15 @@ The same seven checks as Core run here. In the wrapper they mean:
 | --- | --- |
 | Agent granted the tool | The tool was offered in this request's `tools=` |
 | Operator allows it | The tool is in `Policy.allow` |
-| Arguments | The tool's JSON schema from `tools=`: types, required, lengths, ranges, `enum`, `const`, no extras. Invalid JSON is denied. A property that uses a keyword the guard can't check (`pattern`, `format`, `exclusiveMaximum`, `anyOf`, ...) is denied, so no constraint is skipped silently |
+| Arguments | The tool's JSON schema from `tools=`: types, required, lengths, ranges, `enum`, `const`, no extras. Invalid JSON is denied. The guard reads an allowlist of schema keywords. A schema that uses any other keyword (`pattern`, `format`, `anyOf`, `$ref`, `minProperties`, ...) is denied, at the root or on a property, so no constraint is skipped silently |
 | Tool's own rule | `Policy.rules[name](arguments, ctx)`, where `ctx` has `caller`, `tool_call_id` and `config` |
 
 On top of those, a tool call with no ID or with an ID already used in the same reply is
 denied (`missing_tool_call_id`, `duplicate_tool_call_id`), so each result maps to one call.
+A request that offers the same tool name twice is refused before it is sent.
+
+The wrapper copies `tools=` and the caller when the request starts. The copy is what gets
+sent and checked, so changing either while a request is in flight changes nothing.
 
 ## The policy
 
@@ -92,7 +96,7 @@ Policy(
 | `models`, `embeddings`, `files`, `images`, `audio`, `moderations`, `fine_tuning`, `batches`, `uploads`, `vector_stores`, `containers` and the client's settings | Passed through |
 | `stream=True`, `functions=`, `function_call=` | Refused (`UnguardedCall`) |
 | `extra_body` that sets `tools`, `tool_choice`, `stream`, `n` or the legacy function keys | Refused (`UnguardedCall`) |
-| The raw-response header, per request or as a client default | Refused (`UnguardedCall`) |
+| The raw-response header, per request or as a client default | Refused before anything is sent (`UnguardedCall`) |
 | A reply that isn't a chat completion | Refused (`UnguardedCall`) |
 | Every other client attribute: `responses`, `beta`, `completions`, `post()`, `request()`, `with_raw_response`, `realtime`, ... | Refused (`UnguardedAttribute`) |
 | Tool calls of a type other than `function` | Denied (`unsupported_tool_type`) |
@@ -110,8 +114,10 @@ client pointed at OpenRouter, Groq, Together, vLLM, Ollama or LM Studio. Plain-d
 work too. The wrapper itself imports only the Python standard library.
 
 `create()` works with any 1.x `openai`. `parse()` needs a version that has
-`chat.completions.parse()` (1.40 or later is tested). Older versions only offer it under
+`chat.completions.parse()`, which is 1.92 or later. Older versions only offer it under
 `client.beta`, which is refused.
+
+`with wrap(OpenAI(), policy) as client:` and `async with` work as they do on the client.
 
 ## Limits
 
@@ -119,9 +125,8 @@ work too. The wrapper itself imports only the Python standard library.
   your code. Private attributes (`_client` and the like) reach the unwrapped client and
   are outside what the wrapper promises.
 - Rules see the arguments as decoded JSON. With `parse()`, the SDK also builds
-  `parsed_arguments` from your Pydantic models, and a validator there can change values
-  after the check. Run the tool on `function.arguments`, or keep validators that change
-  values out of tool models.
+  `parsed_arguments` from your Pydantic models. If a validator there changed a value, the
+  call is denied (`parsed_arguments_changed`), so what you run is what was checked.
 - The wrapper checks tool calls; it doesn't run them. Your code runs the allowed ones, so a
   tool's handler must still be safe with any valid input.
 - Decisions are only as durable as your `on_decision`. Write them somewhere that survives a

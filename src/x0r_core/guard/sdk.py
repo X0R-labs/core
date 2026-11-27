@@ -21,6 +21,8 @@ reach the unwrapped client and are outside what it promises.
 """
 from __future__ import annotations
 
+import copy
+import dataclasses
 import inspect
 import json
 from collections.abc import Callable, Collection, Mapping
@@ -162,6 +164,8 @@ def _offered_tools(tools: Any, rules: Mapping[str, Authorizer]) -> dict[str, _Of
         name = _get(fn, "name")
         if not isinstance(name, str) or not name:
             continue
+        if name in offered:
+            raise UnguardedCall(f"tool {name!r} is offered twice; offer each tool once")
         parameters = _get(fn, "parameters")
         if not isinstance(parameters, dict):
             parameters = {"type": "object", "properties": {}}
@@ -182,6 +186,12 @@ def _parse_arguments(raw: Any) -> object:
         return raw
 
 
+def _dump(parsed: Any) -> Any:
+    if hasattr(parsed, "model_dump"):
+        return parsed.model_dump(mode="json", exclude_unset=True)
+    return parsed
+
+
 # ── the checking itself ──────────────────────────────────────────────────────
 
 class _Checker:
@@ -193,6 +203,10 @@ class _Checker:
         caller = kwargs.pop("x0r_caller", self.default_caller)
         if caller is not None and not isinstance(caller, Caller):
             raise TypeError("x0r_caller must be a Caller")
+        if caller is not None:
+            # Rules see the caller as it was when the request started.
+            caller = dataclasses.replace(caller, attributes=MappingProxyType(
+                dict(caller.attributes)))
         if kwargs.get("stream"):
             raise UnguardedCall("stream=True isn't guarded yet; call without streaming")
         if kwargs.get("functions") or kwargs.get("function_call"):
@@ -206,6 +220,10 @@ class _Checker:
         headers = kwargs.get("extra_headers") or {}
         if any(str(k).lower() == _RAW_RESPONSE_HEADER for k in headers):
             raise UnguardedCall("raw responses aren't guarded; drop the raw-response header")
+        if kwargs.get("tools") is not None:
+            # One copy is both sent and checked, so changing your list (or passing a
+            # generator) can't make the two differ.
+            kwargs["tools"] = copy.deepcopy(list(kwargs["tools"]))
         offered = _offered_tools(kwargs.get("tools"), self.policy.rules)
         return kwargs, caller, offered
 
@@ -288,12 +306,18 @@ class _Checker:
         name = _get(fn, "name")
         if not isinstance(name, str):
             return Decision(False, "unknown_tool")
+        arguments = _parse_arguments(_get(fn, "arguments"))
+        parsed = _get(fn, "parsed_arguments")
+        if parsed is not None and _dump(parsed) != arguments:
+            # parse() built parsed_arguments with the app's models, and a validator changed
+            # a value. The app would run something other than what was checked.
+            return Decision(False, "parsed_arguments_changed")
         request = ActionRequest(
             workspace_id=_SCOPE,
             agent_workspace_id=_SCOPE,
             agent_tools=list(offered),
             tool_name=name,
-            arguments=_parse_arguments(_get(fn, "arguments")),
+            arguments=arguments,
             caller=caller,
             tool_call_id=call_id,
         )
@@ -370,6 +394,10 @@ class GuardedClient:
     unchanged (``models``, ``embeddings``, ``files``, ...); every other path is refused."""
 
     def __init__(self, client: Any, policy: Policy, caller: Caller | None = None) -> None:
+        headers = getattr(client, "default_headers", None) or {}
+        if any(str(k).lower() == _RAW_RESPONSE_HEADER for k in headers):
+            raise UnguardedCall("the client sends the raw-response header by default, so its "
+                                "replies can't be checked; remove it from default_headers")
         self._client = client
         self._checker = _Checker(policy, caller)
         self.chat = _GuardedChat(client.chat, self._checker)
@@ -383,11 +411,22 @@ class GuardedClient:
         return self._clone(self._client.copy, kwargs)
 
     def _clone(self, method: Callable[..., Any], kwargs: dict[str, Any]) -> GuardedClient:
-        headers = kwargs.get("default_headers") or {}
-        if any(str(k).lower() == _RAW_RESPONSE_HEADER for k in headers):
-            raise UnguardedCall("raw responses aren't guarded; drop the raw-response header")
         return GuardedClient(method(**kwargs), self._checker.policy,
                              self._checker.default_caller)
+
+    def __enter__(self) -> GuardedClient:
+        self._client.__enter__()
+        return self
+
+    def __exit__(self, *exc: Any) -> Any:
+        return self._client.__exit__(*exc)
+
+    async def __aenter__(self) -> GuardedClient:
+        await self._client.__aenter__()
+        return self
+
+    async def __aexit__(self, *exc: Any) -> Any:
+        return await self._client.__aexit__(*exc)
 
     def __getattr__(self, name: str) -> Any:
         if name not in _PASSTHROUGH_ATTRS:

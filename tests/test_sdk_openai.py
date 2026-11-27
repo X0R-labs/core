@@ -63,13 +63,16 @@ def _client(reply: dict, **kwargs) -> openai.OpenAI:
 
 def test_raw_response_header_on_the_client_fails_closed():
     reply = _reply(_call("refund_order", {"order_id": "A-1", "amount": 3}))
-    inner = _client(reply, default_headers={"X-Stainless-Raw-Response": "true"})
-    client = wrap(inner, Policy(allow=["lookup_order"]))
+    seen: list = []
+    inner = openai.OpenAI(api_key="test", base_url="http://llm.test/v1",
+                          default_headers={"X-Stainless-Raw-Response": "true"},
+                          http_client=httpx.Client(transport=_transport(reply, seen)))
     with pytest.raises(UnguardedCall):
-        client.chat.completions.create(model="m", messages=[], tools=TOOLS)
+        wrap(inner, Policy(allow=["lookup_order"]))
     with pytest.raises(UnguardedCall):
         wrap(_client(reply), Policy(allow=[])).with_options(
             default_headers={"x-stainless-raw-response": "true"})
+    assert seen == []
 
 
 def test_parse_error_carrying_the_completion_is_checked_too():
@@ -121,3 +124,24 @@ def test_example_blocks_someone_elses_refund():
                          check=True, timeout=60)
     assert '"reason": "not_callers_record"' in out.stdout
     assert "blocked: Tool call denied: refund_order (not_callers_record)" in out.stdout
+
+
+def test_parse_validator_that_changes_a_value_is_denied():
+    import pydantic
+
+    class LookupOrder(pydantic.BaseModel):
+        order_id: str
+
+        @pydantic.field_validator("order_id")
+        @classmethod
+        def upper(cls, value: str) -> str:
+            return value.upper()
+
+    tool = openai.pydantic_function_tool(LookupOrder, name="lookup_order")
+    records: list[DecisionRecord] = []
+    for order_id, reason in [("A-1", "granted"), ("a-1", "parsed_arguments_changed")]:
+        reply = _reply(_call("lookup_order", {"order_id": order_id}))
+        client = wrap(_client(reply), Policy(allow=["lookup_order"], on_denied="remove",
+                                             on_decision=records.append))
+        client.chat.completions.parse(model="m", messages=[], tools=[tool])
+        assert records[-1].reason == reason

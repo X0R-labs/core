@@ -155,9 +155,24 @@ def test_guard_imports_only_the_standard_library():
     ({"type": "string", "pattern": "^a"}, "abc", False),
     ({"type": "number", "exclusiveMaximum": 10}, 1, False),
     ({"type": "string", "format": "email"}, "a@b.c", False),
+    ({"type": "string", "$dynamicRef": "#x"}, "a", False),
+    ({"type": "number", "const": 1}, 1.0, True),
+    ({"type": "number", "enum": [1.5, 2]}, 2.0, True),
+    ({"type": "boolean", "const": True}, 1, False),
 ])
 def test_enum_const_and_unsupported_keywords(spec, value, ok):
     from x0r_core.guard.engine import check_arguments
 
     parameters = {"type": "object", "properties": {"v": spec}, "required": ["v"]}
     assert (check_arguments(parameters, {"v": value}) is None) is ok
+
+
+@pytest.mark.parametrize("root", [
+    {"type": "object", "properties": {"v": {"type": "string"}}, "minProperties": 2},
+    {"type": "object", "properties": {"v": {"type": "string"}}, "anyOf": [{}]},
+    {"type": "array", "properties": {"v": {"type": "string"}}},
+])
+def test_root_keywords_outside_the_allowlist_deny(root):
+    from x0r_core.guard.engine import check_arguments
+
+    assert check_arguments(root, {"v": "a"}) == "invalid_arguments"

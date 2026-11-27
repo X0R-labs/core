@@ -1,6 +1,7 @@
 """The SDK wrapper: tool calls from an OpenAI-style client are checked before the app sees them."""
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
 from typing import Any
@@ -347,3 +348,95 @@ def test_async_on_decision_is_rejected():
                             on_decision=lambda record: later())
     with pytest.raises(DecisionNotRecorded):
         _create(client)
+
+
+def test_same_tool_offered_twice_is_refused():
+    client, inner, _ = _wrapped(_reply())
+    with pytest.raises(UnguardedCall):
+        _create(client, tools=[TOOLS[0], TOOLS[0]])
+    assert inner.sent == []
+
+
+def test_tools_are_copied_once_and_generators_still_work():
+    client, inner, _ = _wrapped(_reply(_call("lookup_order", {"order_id": "A-1"})))
+    _create(client, tools=(t for t in TOOLS))
+    assert inner.sent[0]["tools"] == TOOLS
+    assert inner.sent[0]["tools"][0] is not TOOLS[0]
+
+
+def test_caller_is_snapshotted_when_the_request_starts():
+    seen = []
+
+    def rule(arguments, ctx):
+        seen.append(dict(ctx.caller.attributes))
+
+    attrs = {"orders": "A-1"}
+    client, inner, _ = _wrapped(_reply(_call("lookup_order", {"order_id": "A-1"})),
+                                rules={"lookup_order": rule})
+    real_create = inner.chat.completions.create
+
+    def create_and_mutate(**kwargs):
+        attrs["orders"] = "B-9"
+        return real_create(**kwargs)
+
+    inner.chat.completions.create = create_and_mutate
+    _create(client, x0r_caller=Caller("u", attrs))
+    assert seen == [{"orders": "A-1"}]
+
+
+class Parsed:
+    def __init__(self, data):
+        self.data = data
+
+    def model_dump(self, **_):
+        return self.data
+
+
+@pytest.mark.parametrize("parsed,reason", [
+    ({"order_id": "A-1"}, "granted"),
+    ({"order_id": "B-9"}, "parsed_arguments_changed"),
+])
+def test_parsed_arguments_must_match_what_was_checked(parsed, reason):
+    reply = _reply(_call("lookup_order", {"order_id": "A-1"}))
+    reply["choices"][0]["message"]["tool_calls"][0]["function"]["parsed_arguments"] = \
+        Parsed(parsed)
+    client, _, records = _wrapped(reply, on_denied="remove")
+    client.chat.completions.parse(model="m", messages=[], tools=TOOLS)
+    assert [r.reason for r in records] == [reason]
+
+
+def test_raw_header_in_client_defaults_is_refused_at_wrap():
+    inner = DictClient(_reply())
+    inner.default_headers = {"X-Stainless-Raw-Response": "true"}
+    with pytest.raises(UnguardedCall):
+        wrap(inner, Policy(allow=[]))
+
+
+def test_context_managers_delegate():
+    events = []
+
+    class Managed(DictClient):
+        def __enter__(self):
+            events.append("enter")
+            return self
+
+        def __exit__(self, *exc):
+            events.append("exit")
+
+        async def __aenter__(self):
+            events.append("aenter")
+            return self
+
+        async def __aexit__(self, *exc):
+            events.append("aexit")
+
+    guarded = wrap(Managed(_reply()), Policy(allow=[]))
+    with guarded as client:
+        assert client is guarded
+
+    async def use():
+        async with guarded as client:
+            assert client is guarded
+
+    asyncio.run(use())
+    assert events == ["enter", "exit", "aenter", "aexit"]

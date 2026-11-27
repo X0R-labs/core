@@ -433,12 +433,12 @@ workspace user can't give their agent `http_get` on their own.
 - `required` fields must be present. A required string can't be blank.
 - `minLength` / `maxLength` for strings. Every string is capped at 8,000 characters anyway.
 - `minimum` / `maximum` for numbers. `NaN` and infinity are always denied.
-- `enum` and `const`, compared by type too.
+- `enum` and `const`. `1` matches `1.0`, but `true` never matches `1`.
 - `true` doesn't count as a number. Python thinks `True == 1`, and the guard doesn't.
 - An argument the schema doesn't declare is denied (`unexpected_arguments`).
-- A property that uses a keyword outside this list that would limit values (`pattern`,
-  `format`, `exclusiveMaximum`, `anyOf`, ...) is denied. A constraint is never skipped
-  without anyone noticing.
+- That's an allowlist. A schema that uses any other keyword (`pattern`, `format`, `anyOf`,
+  `$ref`, `minProperties`, ...), on a property or at the root, is denied. A constraint is
+  never skipped without anyone noticing.
 
 **Check 7 is where business rules go.** The hook gets the arguments and a `HookContext`
 holding the caller. For example:
@@ -473,7 +473,7 @@ Each decision becomes a `policy_decisions` row:
 Read the log with `GET /v1/policy/decisions`. You can filter by `allowed`, `run_id` or
 `tool_call_id`.
 
-`POLICY_VERSION` is `"2"`. If the meaning of a decision ever changes, the version goes up,
+`POLICY_VERSION` is `"3"` (it went to 3 when `enum`, `const` and the keyword allowlist were added). If the meaning of a decision ever changes, the version goes up,
 so old records stay understandable.
 
 

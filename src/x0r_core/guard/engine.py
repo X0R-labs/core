@@ -23,7 +23,7 @@ from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-POLICY_VERSION = "2"
+POLICY_VERSION = "3"
 MAX_STRING_LENGTH = 8000
 
 
@@ -85,16 +85,21 @@ class ActionRequest:
     tool_call_id: str | None = None
 
 
-# Schema keywords the guard can't check. A property that uses one is denied, so a
-# constraint is never silently skipped.
-UNSUPPORTED_KEYWORDS = frozenset({
-    "pattern", "format", "exclusiveMinimum", "exclusiveMaximum", "multipleOf",
-    "oneOf", "anyOf", "allOf", "not", "$ref", "if", "then", "else",
+# The only schema keywords the guard understands. A schema that uses any other keyword
+# (pattern, format, anyOf, $ref, minProperties, ...) is denied, so a constraint the
+# operator wrote is never skipped without anyone noticing.
+PROPERTY_KEYWORDS = frozenset({
+    "type", "minLength", "maxLength", "minimum", "maximum", "enum", "const",
+    "description", "title", "default", "examples",
+})
+ROOT_KEYWORDS = frozenset({
+    "type", "properties", "required", "additionalProperties", "description", "title",
+    "$schema",
 })
 
 
 def _valid_value(value: Any, spec: dict[str, Any], *, required: bool) -> bool:
-    if UNSUPPORTED_KEYWORDS & spec.keys():
+    if not isinstance(spec, dict) or spec.keys() - PROPERTY_KEYWORDS:
         return False
     if not _valid_type(value, spec, required=required):
         return False
@@ -104,7 +109,12 @@ def _valid_value(value: Any, spec: dict[str, Any], *, required: bool) -> bool:
 
 
 def _same(value: Any, option: Any) -> bool:
-    # True == 1 in Python, but not in JSON Schema.
+    # JSON Schema: 1 equals 1.0, but true is not 1 (Python thinks it is).
+    numbers = (int, float)
+    if isinstance(value, bool) or isinstance(option, bool):
+        return type(value) is type(option) and value == option
+    if isinstance(value, numbers) and isinstance(option, numbers):
+        return value == option
     return type(value) is type(option) and value == option
 
 
@@ -138,6 +148,10 @@ def _valid_type(value: Any, spec: dict[str, Any], *, required: bool) -> bool:
 
 def check_arguments(parameters: dict[str, Any], arguments: dict[str, Any]) -> str | None:
     """Return a denial reason if ``arguments`` do not match ``parameters``."""
+    if parameters.keys() - ROOT_KEYWORDS:
+        return "invalid_arguments"
+    if parameters.get("type", "object") != "object":
+        return "invalid_arguments"
     properties: dict[str, Any] = parameters.get("properties") or {}
     required = set(parameters.get("required") or [])
     for name in required:
