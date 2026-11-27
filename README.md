@@ -110,6 +110,8 @@ The full tour, with every component, table, limit and weak spot, is in
   tool's declared argument schema and the operator allowlist before it runs.
 - **Policy decision log** — every tool authorization, allowed or denied, with its reason,
   caller and tool-call id, saved before the tool runs, at `GET /v1/policy/decisions`.
+- **Guard for your own app** — no Core server needed: `wrap(OpenAI(), Policy(...))` checks
+  every tool call a model returns before your code runs it. See [docs/SDK.md](docs/SDK.md).
 - **Runs** — full transcript persisted: every model call, every tool call, every result.
 - **Metering** — monthly token quota per workspace, enforced with `429`, plus a usage
   breakdown by kind.

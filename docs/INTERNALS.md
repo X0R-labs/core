@@ -75,6 +75,7 @@ src/x0r_core/
 ├── security_demo.py   offline demo: one denied tool call, one allowed
 ├── api/v1.py          all HTTP routes under /v1
 ├── guard/engine.py    the rules (standard library only)
+├── guard/sdk.py       wrap(): the guard around any OpenAI-style client
 ├── services/
 │   ├── agents.py      the agent loop
 │   ├── ingest.py      save a document, split it, embed it
@@ -432,8 +433,12 @@ workspace user can't give their agent `http_get` on their own.
 - `required` fields must be present. A required string can't be blank.
 - `minLength` / `maxLength` for strings. Every string is capped at 8,000 characters anyway.
 - `minimum` / `maximum` for numbers. `NaN` and infinity are always denied.
+- `enum` and `const`, compared by type too.
 - `true` doesn't count as a number. Python thinks `True == 1`, and the guard doesn't.
 - An argument the schema doesn't declare is denied (`unexpected_arguments`).
+- A property that uses a keyword outside this list that would limit values (`pattern`,
+  `format`, `exclusiveMaximum`, `anyOf`, ...) is denied. A constraint is never skipped
+  without anyone noticing.
 
 **Check 7 is where business rules go.** The hook gets the arguments and a `HookContext`
 holding the caller. For example:
@@ -470,6 +475,23 @@ Read the log with `GET /v1/policy/decisions`. You can filter by `allowed`, `run_
 
 `POLICY_VERSION` is `"2"`. If the meaning of a decision ever changes, the version goes up,
 so old records stay understandable.
+
+
+### The same guard outside Core: the SDK wrapper
+
+`guard/sdk.py` puts the guard around any OpenAI-style client, with no server:
+
+```python
+client = wrap(OpenAI(), Policy(allow=["lookup_order"], on_decision=save))
+```
+
+On every `chat.completions.create()` or `.parse()` it sends the request, then runs
+`check_action` on each tool call in the reply. Here "agent granted" means the tool was
+offered in `tools=`, and "operator allows" means `Policy.allow`. Each decision goes to
+`on_decision` before the reply is returned. Denied calls are removed from the reply, and in
+raise mode `ToolCallDenied` is raised too. Client paths pass through only if they're on an
+allowlist of paths that can't return tool calls. Everything else (streaming, the Responses
+API, beta, raw HTTP and raw responses) is refused. Details are in [SDK.md](SDK.md).
 
 ---
 

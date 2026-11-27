@@ -85,7 +85,30 @@ class ActionRequest:
     tool_call_id: str | None = None
 
 
+# Schema keywords the guard can't check. A property that uses one is denied, so a
+# constraint is never silently skipped.
+UNSUPPORTED_KEYWORDS = frozenset({
+    "pattern", "format", "exclusiveMinimum", "exclusiveMaximum", "multipleOf",
+    "oneOf", "anyOf", "allOf", "not", "$ref", "if", "then", "else",
+})
+
+
 def _valid_value(value: Any, spec: dict[str, Any], *, required: bool) -> bool:
+    if UNSUPPORTED_KEYWORDS & spec.keys():
+        return False
+    if not _valid_type(value, spec, required=required):
+        return False
+    if "enum" in spec and not any(_same(value, option) for option in spec["enum"] or []):
+        return False
+    return "const" not in spec or _same(value, spec["const"])
+
+
+def _same(value: Any, option: Any) -> bool:
+    # True == 1 in Python, but not in JSON Schema.
+    return type(value) is type(option) and value == option
+
+
+def _valid_type(value: Any, spec: dict[str, Any], *, required: bool) -> bool:
     kind = spec.get("type")
     if kind == "string":
         if not isinstance(value, str):

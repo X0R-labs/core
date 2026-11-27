@@ -15,6 +15,17 @@ from .engine import (
     check_action,
     check_arguments,
 )
+from .sdk import (
+    DecisionNotRecorded,
+    DecisionRecord,
+    GuardedClient,
+    GuardError,
+    Policy,
+    ToolCallDenied,
+    UnguardedAttribute,
+    UnguardedCall,
+    wrap,
+)
 
 __all__ = [
     "MAX_STRING_LENGTH",
@@ -27,4 +38,13 @@ __all__ = [
     "ToolPolicy",
     "check_action",
     "check_arguments",
+    "DecisionNotRecorded",
+    "DecisionRecord",
+    "GuardError",
+    "GuardedClient",
+    "Policy",
+    "ToolCallDenied",
+    "UnguardedAttribute",
+    "UnguardedCall",
+    "wrap",
 ]
