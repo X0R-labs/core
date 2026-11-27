@@ -168,7 +168,7 @@ Follow-ups
 - Streaming requests are refused, as in the SDK, until streaming is supported.
 - `x0r_core.connectors.litellm`, behind an `x0r-core[litellm]` extra. We never fork
   LiteLLM. If its hook API changes, only this module changes.
-- Pinned to the LiteLLM versions we test, with a CI job for each.
+- Pinned to the LiteLLM versions we test (`>=1.110.4,<1.112`), with a CI job for each.
 
 Implemented in the LiteLLM guardrail, with an [example proxy config](../examples/litellm/config.yaml)
 and a CI matrix for LiteLLM 1.110.4 and 1.111.0. The hook tests exercise denial and

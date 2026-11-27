@@ -226,3 +226,25 @@ async def test_unchecked_call_types_are_refused(setup, call_type):
 async def test_embeddings_pass_through(setup):
     guard = connector.X0RGuardrail()
     assert await guard.async_pre_call_hook(None, None, {"input": "hi"}, "aembedding") is None
+
+
+async def test_unknown_reply_type_is_withheld(setup):
+    guard = connector.X0RGuardrail()
+    request = {"tools": []}
+    await guard.async_pre_call_hook(None, None, request, "acompletion")
+    with pytest.raises(HTTPException) as raised:
+        await guard.async_post_call_success_hook(request, None, {"choices": []})
+    assert raised.value.status_code == 500
+
+
+async def test_slow_decision_save_withholds_the_reply(setup, monkeypatch):
+    import time
+
+    monkeypatch.setattr(connector, "CHECK_TIMEOUT", 0.05)
+    guard = connector.X0RGuardrail()
+    monkeypatch.setattr(connector, "check_reply", lambda *a, **k: time.sleep(0.5))
+    request = {"tools": []}
+    await guard.async_pre_call_hook(None, None, request, "acompletion")
+    with pytest.raises(HTTPException) as raised:
+        await guard.async_post_call_success_hook(request, None, ModelResponse())
+    assert raised.value.status_code == 503

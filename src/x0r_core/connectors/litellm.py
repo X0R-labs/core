@@ -30,10 +30,15 @@ from .mcp import caller_key as decode_caller_key
 _SNAPSHOT = "x0r_guard_tools"
 
 
+# Checking and saving every decision for one reply must finish in this many seconds,
+# or the reply is withheld.
+CHECK_TIMEOUT = 30
+
 # Call types that never return tool calls, so they pass through unchecked.
 _NO_TOOL_CALLS = frozenset({
     "embedding", "aembedding", "moderation", "amoderation",
-    "image_generation", "aimage_generation", "transcription", "atranscription",
+    "image_generation", "aimage_generation", "image_edit", "aimage_edit",
+    "transcription", "atranscription",
     "speech", "aspeech",
 })
 
@@ -108,11 +113,14 @@ class X0RGuardrail(CustomGuardrail):
         return False
 
     async def async_post_call_success_hook(self, data, user_api_key_dict, response):
-        if not isinstance(response, ModelResponse):
-            return response
         request = data.get("proxy_server_request") or {}
         if _SNAPSHOT not in request:
-            raise HTTPException(500, "X0R guardrail is missing its pre-call tool snapshot")
+            # Only calls that can't return tool calls skip the pre-call snapshot.
+            if isinstance(response, ModelResponse):
+                raise HTTPException(500, "X0R guardrail is missing its pre-call tool snapshot")
+            return response
+        if not isinstance(response, ModelResponse):
+            raise HTTPException(500, "X0R guardrail can't check this reply type; it was withheld")
         offered = _offered_tools(request[_SNAPSHOT], self.policy.rules)
         headers = request.get("headers") or {}
         caller = None
@@ -126,12 +134,12 @@ class X0RGuardrail(CustomGuardrail):
                     caller_error = exc.reason
                 break
         try:
-            return await asyncio.to_thread(
+            return await asyncio.wait_for(asyncio.to_thread(
                 check_reply, response, caller, offered, self.policy, caller_error=caller_error,
-            )
+            ), CHECK_TIMEOUT)
         except (ToolCallDenied, UnguardedCall) as exc:
             raise HTTPException(400, str(exc)) from None
-        except DecisionNotRecorded:
+        except (DecisionNotRecorded, TimeoutError):
             raise HTTPException(
                 503, "X0R could not record decisions. The reply was withheld.",
             ) from None

@@ -34,7 +34,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-litellm = ["litellm>=1.110.4,<2"]
+litellm = ["litellm>=1.110.4,<1.112"]  # the versions CI tests
 postgres = ["asyncpg>=0.29.0"]
 dev = [
     "pytest>=8.2.0",
