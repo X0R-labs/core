@@ -18,6 +18,7 @@ from ..models import (
     Run,
     Workspace,
 )
+from ..policy import policy_tool_call_id
 from ..schemas import (
     AgentIn,
     AgentOut,
@@ -45,6 +46,17 @@ from ..services import retrieval
 from ..services import usage as usage_service
 
 router = APIRouter(prefix="/v1")
+
+
+def _decision_not_saved_error(exc: agent_service.DecisionNotSaved) -> HTTPException:
+    if exc.run_id is None:
+        message = f"{exc} No tool ran and the run was not saved."
+    else:
+        message = (
+            f"{exc} The tool for that decision was skipped. Earlier tool calls in this run "
+            "may already have run. Inspect GET /v1/runs/{run_id} for saved progress."
+        )
+    return HTTPException(status_code=503, detail={"message": message, "run_id": exc.run_id})
 
 
 # ── workspaces ───────────────────────────────────────────────────────────────
@@ -245,10 +257,7 @@ async def run_agent(agent_id: str, payload: RunIn, session: SessionDep, workspac
             headers={"X-Quota-Used": str(exc.used), "X-Quota-Limit": str(exc.quota)},
         ) from exc
     except agent_service.DecisionNotSaved as exc:
-        raise HTTPException(
-            status_code=503,
-            detail="The policy decision could not be saved, so the tool was not run.",
-        ) from exc
+        raise _decision_not_saved_error(exc) from exc
     except agent_service.AgentRunError as exc:
         await session.commit()
         raise HTTPException(
@@ -286,11 +295,11 @@ async def list_policy_decisions(
     limit: int = Query(default=50, ge=1, le=200),
     allowed: bool | None = None,
     run_id: str | None = None,
-    tool_call_id: str | None = Query(default=None, max_length=200),
+    tool_call_id: str | None = Query(default=None, max_length=4096),
 ):
     query = select(PolicyDecision).where(PolicyDecision.workspace_id == workspace.id)
     if tool_call_id is not None:
-        query = query.where(PolicyDecision.tool_call_id == tool_call_id)
+        query = query.where(PolicyDecision.tool_call_id == policy_tool_call_id(tool_call_id))
     if allowed is not None:
         query = query.where(PolicyDecision.allowed == allowed)
     if run_id is not None:
@@ -356,6 +365,8 @@ async def run_eval_suite(
         # Earlier cases may already have consumed tokens. Preserve their runs and meter.
         await session.commit()
         raise HTTPException(status_code=429, detail=str(exc)) from exc
+    except agent_service.DecisionNotSaved as exc:
+        raise _decision_not_saved_error(exc) from exc
 
     await session.commit()
     return result

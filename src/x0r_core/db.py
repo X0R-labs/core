@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
+from time import sleep
 
 from sqlalchemy import inspect, text
 from sqlalchemy.exc import OperationalError
@@ -41,9 +42,29 @@ _ADDED_COLUMNS = {
 _ADDED_INDEXES = {
     "ix_policy_decisions_tool_call_id": ("policy_decisions", "tool_call_id"),
 }
+_SCHEMA_LOCK_KEY = 0x583052434F5245
+
+
+def _apply_schema_change(sync_conn, statement: str, is_present: Callable[[], bool]) -> None:
+    for attempt in range(4):
+        try:
+            with sync_conn.begin_nested():
+                sync_conn.execute(text(statement))
+            return
+        except OperationalError as exc:
+            if (sync_conn.dialect.name == "sqlite" and attempt < 3
+                    and "database is locked" in str(exc.orig).lower()):
+                sleep(0.05 * (attempt + 1))
+                continue
+            if not is_present():
+                raise
+            return
 
 
 def _add_missing_columns(sync_conn) -> None:
+    postgres = sync_conn.dialect.name == "postgresql"
+    if postgres:
+        sync_conn.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": _SCHEMA_LOCK_KEY})
     inspector = inspect(sync_conn)
     for table_name, columns in _ADDED_COLUMNS.items():
         if not inspector.has_table(table_name):
@@ -54,33 +75,41 @@ def _add_missing_columns(sync_conn) -> None:
             if name in present:
                 continue
             column_type = table.c[name].type.compile(dialect=sync_conn.dialect)
-            if sync_conn.dialect.name == "postgresql":
-                # Safe if another process added it first.
+            if postgres:
                 sync_conn.execute(text(
                     f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS {name} {column_type}"
                 ))
                 continue
-            try:
-                with sync_conn.begin_nested():
-                    sync_conn.execute(
-                        text(f"ALTER TABLE {table_name} ADD COLUMN {name} {column_type}")
-                    )
-            except OperationalError:
-                # Another process may have added it first; anything else is a real error.
-                fresh = {col["name"] for col in inspect(sync_conn).get_columns(table_name)}
-                if name not in fresh:
-                    raise
+            _apply_schema_change(
+                sync_conn, f"ALTER TABLE {table_name} ADD COLUMN {name} {column_type}",
+                lambda name=name, table_name=table_name: (
+                    name in {c["name"] for c in inspect(sync_conn).get_columns(table_name)}
+                ),
+            )
     for index_name, (table_name, column) in _ADDED_INDEXES.items():
         if inspector.has_table(table_name):
-            sync_conn.execute(text(
-                f"CREATE INDEX IF NOT EXISTS {index_name} ON {table_name} ({column})"
-            ))
+            statement = f"CREATE INDEX IF NOT EXISTS {index_name} ON {table_name} ({column})"
+            if postgres:
+                sync_conn.execute(text(statement))
+            else:
+                _apply_schema_change(
+                    sync_conn, statement,
+                    lambda index_name=index_name, table_name=table_name: (
+                        index_name in {
+                            i["name"] for i in inspect(sync_conn).get_indexes(table_name)
+                        }
+                    ),
+                )
 
 
 async def init_db() -> None:
     async with get_engine().begin() as conn:
+        if conn.dialect.name == "postgresql":
+            # Keep the advisory lock through create_all, including on a fresh database.
+            await conn.run_sync(_add_missing_columns)
         await conn.run_sync(Base.metadata.create_all)
-        await conn.run_sync(_add_missing_columns)
+        if conn.dialect.name != "postgresql":
+            await conn.run_sync(_add_missing_columns)
 
 
 async def dispose_db() -> None:

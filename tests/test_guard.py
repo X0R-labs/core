@@ -7,6 +7,8 @@ import sys
 from dataclasses import dataclass, field
 from typing import Any
 
+import pytest
+
 from x0r_core.guard import ActionRequest, Caller, Decision, HookContext, check_action
 
 
@@ -89,6 +91,18 @@ def test_hook_gets_caller_call_id_and_config():
     config = {"max": 5}
     assert _check(request, tools={"refund": tool}, config=config).reason == "over_limit"
     assert seen == [HookContext(caller=caller, tool_call_id="call_9", config=config)]
+
+
+def test_context_is_a_keyword_alias_for_config():
+    config = object()
+
+    def authorize(arguments, hook):
+        return None if hook.config is config else "wrong_config"
+
+    tool = Spec(name="refund", parameters=REFUND.parameters, authorize=authorize)
+    assert _check(_request(), tools={"refund": tool}, context=config).allowed
+    with pytest.raises(TypeError, match="config or context"):
+        _check(_request(), config=None, context=None)
 
 
 def test_own_record_rule():

@@ -1,13 +1,19 @@
 """Caller identity, tool-call links and decisions saved before the tool runs."""
 from __future__ import annotations
 
-from sqlalchemy import create_engine, inspect, select, text
+from hashlib import sha256
 
+import pytest
+from sqlalchemy import create_engine, inspect, select, text
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from x0r_core import db
 from x0r_core.config import get_settings
 from x0r_core.db import _add_missing_columns, get_session_factory
 from x0r_core.guard import Caller, HookContext
 from x0r_core.models import Agent, Base, PolicyDecision, Workspace
 from x0r_core.providers import Completion, Provider, ToolCall
+from x0r_core.services import agents as agent_service
 from x0r_core.services.agents import run_agent
 from x0r_core.tools.base import Tool
 from x0r_core.tools.builtin import REGISTRY
@@ -78,6 +84,38 @@ class OrderProvider(Provider):
             return Completion(content="done")
         call = ToolCall("call_1", "order_refund", {"order_id": self.order_id})
         return Completion(tool_calls=[call])
+
+
+class TwoCallProvider(Provider):
+    name = "two-call-test"
+
+    def __init__(self, ids: list[str]):
+        self.ids = ids
+
+    async def complete(self, **kwargs):
+        if kwargs["messages"][-1]["role"] == "tool":
+            return Completion(content="done")
+        return Completion(tool_calls=[
+            ToolCall(call_id, "knowledge_search", {"query": "warranty"})
+            for call_id in self.ids
+        ])
+
+
+async def test_long_tool_call_ids_are_distinct_and_filterable(client, monkeypatch):
+    ids = ["x" * 200 + suffix for suffix in ("a", "b")]
+    monkeypatch.setattr(agent_service, "build_provider", lambda _: TwoCallProvider(ids))
+    agent_id = await _agent(client)
+    resp = await client.post(f"/v1/agents/{agent_id}/run", json={"input": "warranty?"})
+    assert resp.status_code == 200, resp.text
+    run = resp.json()
+    assert [s["tool_call_id"] for s in run["steps"] if s["type"] == "policy"] == ids
+    for call_id in ids:
+        resp = await client.get("/v1/policy/decisions", params={"tool_call_id": call_id})
+        assert resp.status_code == 200, resp.text
+        rows = resp.json()
+        assert len(rows) == 1
+        assert rows[0]["run_id"] == run["id"]
+        assert rows[0]["tool_call_id"] == "sha256:" + sha256(call_id.encode()).hexdigest()
 
 
 def _own_record(arguments, hook: HookContext):
@@ -181,16 +219,30 @@ def test_old_database_gets_new_columns(tmp_path):
     assert "policy_decisions" in Base.metadata.tables
 
 
-def test_old_database_gets_the_tool_call_index(tmp_path):
-    engine = create_engine(f"sqlite:///{tmp_path / 'old.db'}")
-    with engine.begin() as conn:
-        conn.execute(text(
-            "CREATE TABLE policy_decisions (id INTEGER PRIMARY KEY, tool VARCHAR(120))"
-        ))
-    with engine.begin() as conn:
-        _add_missing_columns(conn)
-    names = {i["name"] for i in inspect(engine).get_indexes("policy_decisions")}
-    assert "ix_policy_decisions_tool_call_id" in names
+async def test_init_db_upgrades_an_existing_database(tmp_path, monkeypatch):
+    path = tmp_path / "old.db"
+    engine = create_engine(f"sqlite:///{path}")
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "CREATE TABLE policy_decisions (id INTEGER PRIMARY KEY, tool VARCHAR(120))"
+            ))
+        settings = get_settings().model_copy(update={"database_url": f"sqlite+aiosqlite:///{path}"})
+        monkeypatch.setattr(db, "get_settings", lambda: settings)
+        monkeypatch.setattr(db, "_engine", None)
+        monkeypatch.setattr(db, "_session_factory", None)
+        try:
+            await db.init_db()
+        finally:
+            await db.dispose_db()
+        inspector = inspect(engine)
+        columns = {c["name"] for c in inspector.get_columns("policy_decisions")}
+        assert {"tool_call_id", "caller_subject"} <= columns
+        indexes = {i["name"]: i["column_names"]
+                   for i in inspector.get_indexes("policy_decisions")}
+        assert indexes["ix_policy_decisions_tool_call_id"] == ["tool_call_id"]
+    finally:
+        engine.dispose()
 
 
 async def test_control_characters_in_caller_are_rejected(client):
@@ -203,8 +255,6 @@ async def test_control_characters_in_caller_are_rejected(client):
 
 
 async def test_unsaved_decision_means_the_tool_never_runs(client, monkeypatch):
-    from sqlalchemy.ext.asyncio import AsyncSession
-
     agent_id = await _agent(client)
     called: list[bool] = []
     original = REGISTRY["knowledge_search"]
@@ -222,7 +272,45 @@ async def test_unsaved_decision_means_the_tool_never_runs(client, monkeypatch):
     monkeypatch.setattr(AsyncSession, "commit", failing_commit)
     resp = await client.post(f"/v1/agents/{agent_id}/run", json={"input": "warranty?"})
     assert resp.status_code == 503
+    # The first decision failed, so nothing of the run was saved: no id to point at.
+    assert resp.json()["detail"]["run_id"] is None
+    assert "not saved" in resp.json()["detail"]["message"]
     assert called == []
+
+
+@pytest.mark.parametrize("eval_run", [False, True])
+async def test_decision_503_exposes_completed_tool_steps(client, monkeypatch, eval_run):
+    agent_id = await _agent(client)
+    path = f"/v1/agents/{agent_id}/run"
+    payload = {"input": "warranty?"}
+    if eval_run:
+        suite = await client.post("/v1/evals", json={
+            "agent_id": agent_id, "name": "Warranty",
+            "cases": [{"input": "warranty?", "expected": "24 months"}],
+        })
+        assert suite.status_code == 201, suite.text
+        path = f"/v1/evals/{suite.json()['id']}/run"
+        payload = {}
+
+    monkeypatch.setattr(agent_service, "build_provider", lambda _: TwoCallProvider(["one", "two"]))
+    commit = AsyncSession.commit
+    attempts = 0
+
+    async def fail_second_commit(self):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 2:
+            raise RuntimeError("disk full")
+        await commit(self)
+
+    monkeypatch.setattr(AsyncSession, "commit", fail_second_commit)
+    resp = await client.post(path, json=payload)
+    assert resp.status_code == 503, resp.text
+    detail = resp.json()["detail"]
+    assert "Earlier tool calls" in detail["message"]
+    run = await client.get(f"/v1/runs/{detail['run_id']}")
+    assert run.status_code == 200, run.text
+    assert [s["type"] for s in run.json()["steps"]] == ["model", "policy", "tool"]
 
 
 def test_hooks_written_for_settings_still_work():

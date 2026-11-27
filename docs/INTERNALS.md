@@ -298,7 +298,7 @@ flowchart TD
   C -- yes --> LIM["status limit_exceeded"]
   C -- no --> G["Guard checks one call"]
   G --> S["Save decision + COMMIT"]
-  S -- "save fails" --> X3["503, tool never runs"]
+  S -- "save fails" --> X3["503 with run ID, current tool skipped"]
   S --> D{"Allowed?"}
   D -- no --> B["status blocked, stop"]
   D -- yes --> H["Run the tool handler"]
@@ -337,16 +337,17 @@ flowchart TD
 | `limit_exceeded` | Too many steps, or more than 8 tool calls in one step | 200 |
 | `failed` | Something crashed (for example the provider) | 502 with `run_id` |
 | (no run) | Monthly quota already used up | 429 |
-| (tool skipped) | The decision couldn't be saved | 503 |
+| (current tool skipped) | The decision couldn't be saved | 503 with `run_id` |
 
 `blocked` and `limit_exceeded` come back as **200**, so a client must read `status`.
 
 ### Why the commit happens mid-run
 
 The decision is committed **before** the tool runs. If the server dies during the tool, the
-record of what was allowed is already safe. As a side effect, the run row is committed with
-status `running` at that moment, together with anything else pending in the session. If the
-save fails, Core rolls back, raises `DecisionNotSaved`, and the tool never runs.
+record of what was allowed is already safe. The same commit saves the run as `running`
+with its transcript and token totals so far. If the save fails, Core rolls back, skips the
+current tool, and tries to preserve any newly completed steps for an existing run. Agent
+and eval requests return `503` with the run ID. Earlier tools may already have run. If the first decision of a run fails, nothing was saved and `run_id` is null.
 
 ### Tool failures
 
@@ -397,8 +398,8 @@ classDiagram
   ActionRequest ..> Decision : check_action()
 ```
 
-- `check_action(request, operator_tools=..., tools=..., config=...)` is the one function.
-  It returns a `Decision`.
+- `check_action(request, operator_tools=..., tools=..., config=...)` returns a `Decision`.
+  The legacy keyword `context=` is an alias for `config=`. Passing both raises `TypeError`.
 - `ToolPolicy` is only what the guard needs to know about a tool: its name, its argument
   schema and its optional rule (`authorize`). Core's `Tool` class fits it.
 - `policy.authorize_tool()` is Core's adapter. It reads the operator allowlist from Settings,

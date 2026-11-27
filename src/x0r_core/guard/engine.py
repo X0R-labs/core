@@ -134,14 +134,24 @@ def _is_text(value: object) -> bool:
     return isinstance(value, (str, bytes, bytearray))
 
 
+_UNSET = object()
+
+
 def check_action(
     request: ActionRequest,
     *,
     operator_tools: Collection[str],
     tools: Mapping[str, ToolPolicy],
-    config: Any = None,
+    config: Any = _UNSET,
+    context: Any = _UNSET,
 ) -> Decision:
-    """Decide one action. ``config`` reaches the tool's hook as ``HookContext.config``."""
+    """Decide one action. The hook receives ``config`` or its legacy alias ``context``."""
+    if context is not _UNSET:
+        if config is not _UNSET:
+            raise TypeError("check_action() accepts either config or context, not both")
+        config = context
+    elif config is _UNSET:
+        config = None
     if request.workspace_id != request.agent_workspace_id:
         return Decision(False, "workspace_mismatch")
     # A plain string is a Collection too, and "in" would match substrings: deny it.

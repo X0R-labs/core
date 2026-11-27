@@ -23,7 +23,7 @@ Retrieved text and model-generated tool requests cannot modify operator settings
 
 **Caller identity.** A run may carry a `caller` (subject id plus a few attributes). Core trusts it because the request is authenticated with the workspace API key: the app vouches for its own end user. Core does not verify the end user itself, and the caller is not signed yet; signing matters once identity passes through a proxy and is planned for the connector phase.
 
-**Saved before the action.** Each decision is committed to the database before the tool handler runs, so the record survives a crash mid-action. This also commits the run row as `running` at that point. The record is linked to the model's `tool_call_id` when the provider sends one (stored as null otherwise, and cut to 200 characters; the full id stays in the run transcript). If the decision cannot be saved, the tool is not run and the run request returns `503`.
+**Saved before the action.** Each decision is committed before the tool handler runs, along with the run's progress. A missing `tool_call_id` is stored as null. IDs over 200 characters are stored as `sha256:` plus the hex digest of the full ID, which stays in the run transcript. If the decision cannot be saved, Core skips that tool and returns `503` with the run ID. Earlier tools may already have run. If the very first decision of a run fails, nothing was saved and `run_id` is null.
 
 Hooks written before `HookContext` (taking settings as the second argument) keep working: unknown attributes on the context fall through to Core's settings.
 

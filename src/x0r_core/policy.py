@@ -4,6 +4,7 @@ This is an operator-controlled policy gate, not end-user RBAC.
 """
 from __future__ import annotations
 
+from hashlib import sha256
 from typing import TYPE_CHECKING
 
 from .config import Settings
@@ -28,6 +29,12 @@ __all__ = [
     "check_arguments",
     "operator_tools",
 ]
+
+
+def policy_tool_call_id(call_id: str) -> str:
+    if len(call_id) <= 200:
+        return call_id
+    return "sha256:" + sha256(call_id.encode("utf-8")).hexdigest()
 
 
 def operator_tools(settings: Settings) -> set[str]:
