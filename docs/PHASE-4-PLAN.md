@@ -55,6 +55,9 @@ vouches for it (Core). Through a proxy, nothing vouches for it, so it gets signe
 - Core: `POST /v1/caller-tokens` mints a token for an API key's workspace, and run
   requests accept `caller_token` next to `caller`.
 - Short lifetimes (5 minutes by default) and no revocation list in this phase.
+- Attribute values may be a string or a list of strings, so "owns orders A-1 and A-2" is
+  `{"orders": ["A-1", "A-2"]}`. `Caller.attributes` widens to `str | tuple[str, ...]`.
+  A list is matched by exact membership, and a string is never split on commas.
 
 Done when: tokens round-trip, tampered, expired or wrong-audience tokens are denied with
 their reason, rotation works, and the guard still imports only the standard library.
@@ -82,15 +85,23 @@ caller_owns = { argument = "order_id", attribute = "orders" }
 - An unknown key or rule type fails at load time. It never becomes "allow".
 - `Policy.from_file(path)` for the SDK. Core gains a `workspace_policies` table, with
   `PUT /v1/policy` to upload a file and a stored revision number.
-- Every decision records `policy_revision` next to `policy_version`, so you can tell
-  which file made it.
+- Every decision records which policy made it: `policy_digest` (SHA-256 of the file's
+  bytes, always set) and `policy_revision` (Core's number for an uploaded file, empty for
+  a local file Core has never seen). Both appear in `GET /v1/policy/decisions`.
+- A run loads the policy and its revision once, as one snapshot, and carries it through
+  every decision in that run. An upload during a run doesn't change what the run uses
+  or what its decisions say.
 - Decision sink: `core_sink(url, api_key)` is an `on_decision` that posts to a new
   `POST /v1/policy/decisions`. Then SDK and connector decisions land in the same log as
-  Core's. Retry and fail-closed rules match the in-process ones.
+  Core's. Each record carries an idempotency key (a UUID made when the decision is made,
+  so retries reuse it), with a unique index on it, so a retry never adds a second row.
+  The record also carries `policy_digest`, which Core maps to a revision when it knows
+  the file. Fail-closed rules match the in-process ones.
 
 Done when: the same file gives the same decisions in Core, `wrap()` and a connector
-(one shared test table), bad files are rejected with a clear message, and decisions from
-the sink show up in `GET /v1/policy/decisions`.
+(one shared test table), bad files are rejected with a clear message, decisions from
+the sink show up in `GET /v1/policy/decisions` once each, even when retried, and each
+decision names the exact policy that made it.
 
 ### 4c. MCP guard proxy
 
@@ -121,8 +132,24 @@ sequenceDiagram
   `--upstream <url>` for HTTP servers.
 - Schemas come from the real server's `tools/list`, so check 6 uses the schema the
   server actually enforces.
-- The caller comes from a signed token (4a), sent in request metadata over HTTP or as an
-  environment variable for a stdio session.
+- MCP tools often use arrays, nested objects and `$ref`, which the guard denies today.
+  4c widens the schema subset (arrays with `items`, `minItems`/`maxItems`, nested
+  objects to a fixed depth, local `$ref`). Anything still unsupported stays denied.
+  `x0r mcp-proxy --check` lists every tool whose schema the guard can't fully check, so
+  this shows up at setup time, not in production. An operator can set
+  `schema = "skip"` on one tool in the policy file to check only the grants and rules
+  for it, and each such decision is logged with that fact.
+- Retries: the proxy never retries a call itself. If the client sends an idempotency key
+  in the call's `_meta`, the proxy keeps the result for a short window and replays it
+  for a repeated key instead of calling the server twice. Without a key, a client that
+  retries after a lost response can run a tool twice, as with any MCP server. The docs say
+  so, and recommend idempotent tools for anything that moves money or data.
+- The caller comes from a signed token (4a). Over HTTP it's sent with each request.
+  For stdio, the proxy reads it from `--caller-token-file`, again before each call, so the
+  app can write a fresh token before the old one expires and a long session keeps
+  working. The proxy never passes the token, its file path or any `X0R_*` variable to the
+  server it starts: the child gets a cleaned environment, so it can't read and replay
+  the token.
 - Unknown methods that can cause actions are refused. Resources and prompts are passed
   through read-only, with a flag to block them.
 - It lives in `x0r_core.connectors.mcp` behind an `x0r-core[mcp]` extra. The guard
@@ -130,7 +157,8 @@ sequenceDiagram
 
 Done when: a denied call never reaches the server (proven with a test server that
 records calls), `tools/list` hides tools the policy doesn't allow, it works with stdio
-and HTTP, and there's an example config for Claude Desktop.
+and HTTP, the child process can't see the caller token, a repeated idempotency key runs
+the tool once, and there's an example config for Claude Desktop.
 
 ### 4d. LiteLLM connector
 
@@ -149,25 +177,48 @@ and decisions reach the sink.
 
 - New columns: `prev_hash` and `row_hash`, where
   `row_hash = sha256(prev_hash + canonical JSON of the row)`. There is one chain per
-  workspace, and each insert happens under the same lock Core already takes.
-- `x0r verify-log [--workspace ws_...]` walks the chain and reports the first broken row.
-- `GET /v1/policy/decisions/head` returns the latest hash. A customer can store it
-  elsewhere, so even a rewrite of the whole chain shows.
-- Existing rows get a starting hash during migration.
+  workspace.
+- Every decision insert, from every writer, first takes a per-workspace lock in the same
+  transaction: `pg_advisory_xact_lock` on the workspace on Postgres, and the database's
+  single writer on SQLite. It then reads the head and appends. Two writers can't both
+  extend the same head, so the chain never forks. (The lock Core takes today is only
+  for schema setup. This adds a new one.)
+- **Anchors.** A chain alone can't catch two things: the newest rows being deleted, or
+  someone with database access recomputing every hash after an edit. So Core
+  periodically writes an anchor: the head hash, row count and time, signed with a
+  server key kept outside the database. It can also push each anchor to a place the
+  customer controls (a webhook or a bucket).
+- `x0r verify-log [--workspace ws_...] [--anchor file]` walks the chain and checks it
+  against the latest anchor, or one you give it. It reports the first broken row, or
+  "rows missing after the anchor".
+- Honest claim: this detects edits and deletions by anyone who doesn't also have the
+  anchor key and access to the anchors stored elsewhere. It isn't proof against someone
+  who controls both.
+- Rollout: the columns start nullable, and rows written before the upgrade stay
+  unchained. The chain starts at the first hashed row, recorded as a "genesis" anchor.
+  Core runs as one service, so an upgrade replaces every writer at once. If several
+  versions ever run side by side, chaining is switched on only after every writer is
+  upgraded. `verify-log` reports any unhashed row after the genesis anchor as a break.
 
-Done when: changing, deleting or reordering any row makes `verify-log` fail at that row,
-and concurrent inserts still produce one valid chain.
+Done when: changing, deleting or reordering any row, deleting the newest rows, or
+rewriting the whole chain without the anchor key makes `verify-log` fail, and
+concurrent inserts from several workers still produce one valid chain.
 
 ### 4f. Retention and redaction
 
-- Per-workspace retention in days. A purge job deletes old rows, then records a
-  checkpoint (the last deleted hash), so the chain still verifies.
+- Per-workspace retention in days. In one transaction, the purge deletes old rows and
+  writes a signed checkpoint anchor (the last deleted hash), so either both happen or
+  neither does, and the chain still verifies from the checkpoint.
+- Retention and redaction cover run history too: `runs.input`, `runs.output` and
+  `runs.steps` hold prompts, results and tool arguments, so they're purged or redacted on
+  the same schedule as the decisions they belong to.
 - Redaction options: store `caller_subject` hashed (with a workspace salt) instead of
   plain, and drop custom reason text that could carry data.
-- Argument values are still never stored. That doesn't change.
+- Argument values are still never stored in the decision log. That doesn't change.
 
-Done when: the purge keeps `verify-log` passing, and hashed subjects still let you find
-"all decisions for user X" when you know X.
+Done when: the purge keeps `verify-log` passing even if it's interrupted, no run history
+older than the retention period remains, and hashed subjects still let you find "all
+decisions for user X" when you know X.
 
 ## Constraints
 
