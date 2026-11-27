@@ -15,6 +15,8 @@ Before any tool runs, built-in or custom, the execution service checks (policy v
 
 The default operator list is `knowledge_search,calculator`. HTTP remains unavailable unless an operator explicitly grants `http_get` and configures `X0R_HTTP_TOOL_ALLOWLIST`. Custom registry tools run only after the operator adds them to the allowlist, and only with arguments their schema accepts. Schema checks constrain argument shape, not what a handler does with valid input: a custom tool's handler is trusted code and must enforce its own business rules.
 
+The rules live in `x0r_core.guard`, which imports only the Python standard library so other connectors can reuse them; Core calls it through `x0r_core.policy.authorize_tool`.
+
 Policy version 1 (commit `8538e2d`, referenced by the sample review) denied all custom tools and hard-coded the built-in argument rules. Version 2 keeps the same reason codes and the same outcomes for built-in tools.
 
 Retrieved text and model-generated tool requests cannot modify operator settings through this execution path. This does not prevent all prompt injection: an agent can still misuse an otherwise permitted operation or generate misleading answers.
