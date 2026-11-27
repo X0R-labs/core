@@ -1,20 +1,16 @@
 # Phase 4 plan: connectors, shared policy, trustworthy log
 
-Status: in progress. 4a is implemented ([CALLER-TOKENS.md](CALLER-TOKENS.md)); the rest is planned. It breaks the phase 4 row of
-[GATEWAY-PLAN.md](GATEWAY-PLAN.md) into pieces that each land as their own pull request.
+4a and 4b are done. 4c is in progress. 4d through 4h are planned. This plan breaks
+phase 4 of [GATEWAY-PLAN.md](GATEWAY-PLAN.md) into pieces that can land as separate pull
+requests.
 
 ## Where we are
 
-Today the guard runs in two places: inside Core's agent loop, and inside your own app
-through `wrap()`. Both use the same `check_action`. Three things are missing before an
-SMB, SaaS team or agency can put it in front of agents they already run:
-
-1. **It can't sit where their agents already are.** Many use MCP tool servers (Claude,
-   Cursor, agent frameworks) or route model calls through LiteLLM.
-2. **Policy is Python code.** An agency can't hand a client a rule file, and Core and the
-   SDK can't share one.
-3. **The log is a plain table.** Anyone with database access can edit or delete a row and
-   nobody can tell.
+The guard runs inside Core's agent loop and inside your app through `wrap()`. Both
+use the same checks and can share a TOML policy and decision log. Signed caller
+tokens are ready for the connectors. The next steps are to check calls from MCP and
+LiteLLM, make edits to the decision log detectable, and give admins control over keys
+and visibility into app access.
 
 ## The pieces, in order
 
@@ -25,24 +21,30 @@ flowchart LR
   B --> D[4d LiteLLM connector]
   A --> D
   E[4e Hash-chained decision log] --> F[4f Retention and redaction]
+  C --> G[4g Key control]
+  D --> G
+  H[4h AI access inventory]
 ```
 
 | # | Piece | Why it comes here | Size |
 | --- | --- | --- | --- |
-| 4a | Signed caller identity | Every connector crosses a hop. The caller must arrive in a form a proxy can trust | S |
-| 4b (built) | Policy as a file, decision sink | One policy for Core, SDK and connectors, and one place to see every decision | M |
-| 4c | MCP guard proxy | Checks at the moment a tool actually runs. Works with any MCP client | M |
+| 4a (done) | Signed caller identity | Every connector crosses a hop. The caller must arrive in a form a proxy can trust | S |
+| 4b (done) | Policy as a file, decision sink | One policy for Core, SDK and connectors, and one place to see every decision | M |
+| 4c (in progress) | MCP guard proxy | Checks at the moment a tool actually runs. Works with any MCP client | M |
 | 4d | LiteLLM connector | For teams that already route through LiteLLM | S |
 | 4e | Hash-chained decision log | Makes edits and deletions detectable | S |
 | 4f | Retention and redaction | What buyers ask about once the log holds real data | S |
+| 4g | Key control | Uses the LiteLLM gateway and MCP proxy to check calls from managed devices | M |
+| 4h | AI access inventory | Shows which AI apps can reach company data and lets admins revoke access | L |
 
 4a and 4b come first because both connectors need them. 4e and 4f don't depend on the
 connectors and can run in parallel with them.
 
 ### 4a. Signed caller identity (implemented)
 
-Today the caller is trusted because the app passes it in-process (SDK) or the API key
-vouches for it (Core). Through a proxy, nothing vouches for it, so it gets signed.
+The SDK trusts the caller passed by the app. In Core, the workspace key holder can
+assert the caller or send a signed token. Connectors use signed tokens to verify callers
+across a network hop. See [Caller tokens](CALLER-TOKENS.md).
 
 - The app signs a small token, `x0r.v1.<payload>.<sig>`. The payload is base64url JSON:
   `{kid, sub, attrs, aud, iat, exp}`, and the signature is HMAC-SHA256 with a per-workspace
@@ -66,7 +68,7 @@ vouches for it (Core). Through a proxy, nothing vouches for it, so it gets signe
 Done when: tokens round-trip, tampered, expired or wrong-audience tokens are denied with
 their reason, rotation works, and the guard still imports only the standard library.
 
-### 4b. Policy as a file, and a shared decision sink
+### 4b. Policy as a file, and a shared decision sink (implemented)
 
 Built for Core and the SDK. Connector integration follows in 4c and 4d.
 
@@ -104,7 +106,7 @@ caller_owns = { argument = "order_id", attribute = "orders" }
   The record also carries `policy_digest`, which Core maps to a revision when it knows
   the file. Fail-closed rules match the in-process ones.
 
-Core and `wrap()` share policy rule test cases. Invalid uploads return a validation
+Done when: Core and `wrap()` share policy rule test cases. Invalid uploads return a validation
 error, and retried sink decisions appear once in `GET /v1/policy/decisions`. The log
 identifies the file used for each decision made under a file policy.
 
@@ -224,6 +226,48 @@ concurrent inserts from several workers still produce one valid chain.
 Done when: the purge keeps `verify-log` passing even if it's interrupted, no run history
 older than the retention period remains, and hashed subjects still let you find "all
 decisions for user X" when you know X.
+
+### 4g. Key control
+
+Depends on 4d (LiteLLM connector) and 4c (MCP guard proxy).
+
+- Bind each X0R key to one owner, a person or service. The gateway uses that owner
+  as the caller or accepts a signed caller token whose subject matches the owner.
+  Deny mismatches. Keep the provider keys in the LiteLLM gateway, log every gateway
+  call against its X0R key, and check tool calls against policy.
+- Include a short setup guide. Block direct provider API access from laptops with an
+  egress firewall or secure web gateway, and allow the gateway to reach those APIs.
+  Use managed DNS as an extra layer because direct IP connections and DNS-over-HTTPS
+  can bypass DNS filtering. Push managed settings so laptops send model calls through
+  the gateway and MCP tool calls through the proxy.
+
+Done when: the gateway rejects caller mismatches, logs calls against their assigned
+keys, and blocks denied tool calls. The guide shows how to verify that direct provider
+API calls from a managed laptop are blocked.
+
+### 4h. AI access inventory
+
+- Start with read-only access to Google Workspace and Microsoft 365 admin APIs.
+  Inventory per-user delegated grants and app-only or tenant-wide access, including
+  Microsoft 365 application permissions and app role assignments, and Google
+  Workspace domain-wide delegation. Show which users or tenants the grants cover
+  and what access they give.
+- Identify AI apps with a maintained list of known AI vendors and app IDs, plus
+  admin tags. Show the inventory alongside the decision log. Flag any app with
+  broad scopes, even if it is absent from the list. This includes full Drive or
+  mail read-write access and admin scopes.
+- Add revocation after the read-only inventory ships. Let an admin revoke a grant
+  through the provider's admin API and see its updated status in the inventory.
+
+Done when: admins can see delegated and tenant-wide access, scopes, and policy flags
+from both platforms using read-only access. In the second release, an admin can revoke
+a grant and verify the result in the inventory.
+
+## What X0R does not cover
+
+X0R can't block actions in browser chat apps such as ChatGPT web before they happen.
+Use the enterprise plan, allow only the company workspace, and review its audit logs.
+Detecting secrets pasted into browser chats (DLP) is out of scope for now.
 
 ## Constraints
 

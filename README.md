@@ -1,245 +1,78 @@
 # X0R Core
 
-**The AI agent backend you own.**
+X0R checks what AI agents are allowed to do before they do it.
 
-Self-hosted. Provider-agnostic. Metered.
+## Why
 
-[Getting started with Guard, Core, or MCP tools](docs/GETTING-STARTED.md)
+- Decide which tools an agent can use and what it can do with them.
+- Block calls that break your rules before the tool runs.
+- See which calls were allowed or blocked and why.
 
-X0R Core is a small, complete backend for putting AI agents on top of a company's own
-documents: ingest, retrieve, run tool-calling agents, grade them, and meter every token —
-without handing your data or your bill to a platform you don't control.
+## How it fits
+
+| Connect with | What it checks | Status |
+| --- | --- | --- |
+| SDK `wrap()` | Tool calls returned to your Python app by an OpenAI-compatible client | Available |
+| Core API | Tool calls in agents run by your self-hosted Core server | Available |
+| MCP proxy | Tool calls sent to MCP servers | In progress |
+| LiteLLM gateway | Tool calls in model replies routed through LiteLLM | Planned |
+
+Core also handles document ingestion and search, run transcripts, token usage, and evals. See [Internals](docs/INTERNALS.md).
+
+## Quick start
+
+**Use Guard in your app.** Install it with `pip install x0r-guard` after the first release. For now, run `pip install ./packages/x0r-guard` from this checkout.
+
+Use your existing OpenAI-compatible `client`, `model`, and `tools` list with a `lookup_order` tool. Run from the checkout to load [the example policy](examples/policy.toml). Use the Core workspace API key from the [getting started guide](docs/GETTING-STARTED.md) as `core_api_key`. Core records allowed and blocked calls and their reasons in the workspace decision log.
+
+```python
+from x0r_guard import Caller, Policy, core_sink, wrap
+
+policy = Policy.from_file("examples/policy.toml",
+                          on_decision=core_sink("http://localhost:8000", core_api_key))
+guarded = wrap(client, policy)
+reply = guarded.chat.completions.create(
+    model=model,
+    messages=[{"role": "user", "content": "Look up order A-1."}],
+    tools=tools,
+    x0r_caller=Caller("user-42", {"orders": "A-1"}),
+)
+tool_calls = reply.choices[0].message.tool_calls
+```
+
+**Run Core.** From the checkout, start Core and Postgres. Compose uses the offline mock provider by default.
+
+Copy [`.env.example`](.env.example) to `.env` if you haven’t already. Set `X0R_CALLER_KEY_SECRET` and `X0R_BOOTSTRAP_TOKEN` in `.env`, using a separate `openssl rand -hex 32` value for each. Reuse those values across restarts. Changing the caller key secret invalidates existing caller tokens. Changing the bootstrap token makes the old token stop working.
+
+Compose reads `.env` for variable substitution and passes the settings listed in `docker-compose.yml` to Core. Exported shell variables take precedence.
 
 ```bash
-pip install -e packages/x0r-guard -e ".[dev]"
-x0r seed        # demo workspace: documents + agent + eval suite, no API key needed
-x0r serve       # http://127.0.0.1:8000/docs
+docker compose up --build -d
 ```
 
-It runs with **zero configuration** — no API key, no database server, no Docker. The
-built-in `mock` provider exercises the whole pipeline offline so you can see it work
-before you spend a cent.
+Open `http://localhost:8000/docs`. The [getting started guide](docs/GETTING-STARTED.md) shows how to create a workspace and upload a policy.
 
----
+For a local SQLite demo, run `pip install -e packages/x0r-guard -e ".[dev]"`, then `x0r seed` and `x0r serve`. For a real model, copy `.env.example` to `.env` if needed, then edit `.env` to set `X0R_PROVIDER=openai_compatible` and configure the endpoint, API key, and chat model. When running Core directly, it also reads the embedding model setting from `.env`. See the [security model](docs/SECURITY-MODEL.md) before deployment.
 
-## Reproducible security demonstration
+## Progress
 
-Run `x0r security-demo` after installation for **deterministic mock testing** of an
-operator-denied lookup (zero handler entries) and a permitted lookup (one real handler
-entry). It uses synthetic data and a disposable database, with no provider API call.
-See the [demo command and expected output](docs/SECURITY-REVIEW-DEMO.md) and
-[sample review](docs/SAMPLE-SECURITY-REVIEW.md). This demonstrates our own experimental
-system, not a client engagement, independent audit or production security guarantee.
+See the [Phase 4 plan](docs/PHASE-4-PLAN.md).
 
-## Why this exists
+- [x] 4a. Signed caller identity
+- [x] 4b. Policy files and shared decision log
+- [ ] 4c. MCP guard proxy (in progress)
+- [ ] 4d. LiteLLM connector (planned)
+- [ ] 4e. Hash-chained decision log (planned)
+- [ ] 4f. Retention and redaction (planned)
+- [ ] 4g. Key control (planned)
+- [ ] 4h. AI access inventory (planned)
 
-Most teams that try to ship an AI feature end up rebuilding the same six things:
-ingestion, retrieval, a tool loop, per-tenant auth, usage accounting, and a way to prove
-quality didn't regress. Then they couple all of it to one vendor's SDK.
+## Docs
 
-X0R Core is those six things, written once, designed to be run inside your own
-infrastructure and pointed at any OpenAI-compatible model endpoint.
+- [Getting started](docs/GETTING-STARTED.md) · [SDK](docs/SDK.md) · [API](docs/API.md) · [Caller tokens](docs/CALLER-TOKENS.md)
+- [Security model](docs/SECURITY-MODEL.md) · [Architecture](docs/ARCHITECTURE.md) · [Internals](docs/INTERNALS.md) · [Gateway plan](docs/GATEWAY-PLAN.md)
+- [Security demo](docs/SECURITY-REVIEW-DEMO.md) · [Sample security review](docs/SAMPLE-SECURITY-REVIEW.md)
 
-| Problem | What Core gives you |
-| --- | --- |
-| "Where do we put the documents?" | Chunking + embeddings + hybrid retrieval, in your database |
-| "How do agents call our stuff?" | A bounded tool loop with a registry you can extend |
-| "How do we bill tenants?" | API keys, workspaces, quotas, per-run token accounting |
-| "How do we know it still works?" | Eval suites with pass rates, stored per case |
-| "Can we self-host it?" | FastAPI + SQLAlchemy. SQLite for a demo, Postgres support (validate your deployment) |
-| "Are we locked to OpenAI?" | Any OpenAI-compatible base URL: OpenAI, OpenRouter, Groq, vLLM, Ollama |
+## Contributing and license
 
-## How it works, in a nutshell
-
-Your app calls Core with an API key. Core finds the workspace, does the work, and checks
-every tool an agent wants to use **before** it runs.
-
-```mermaid
-flowchart LR
-  App["Your app"] -->|"API key"| API["API<br/>routes + key check"]
-  API --> SVC["Services<br/>ingest · search · agents · evals · usage"]
-  SVC -->|"ask the model"| PROV["Providers<br/>mock · any OpenAI-style API"]
-  SVC -->|"may I use this tool?"| GUARD["Guard<br/>7 checks"]
-  GUARD -->|"allowed, recorded"| TOOLS["Tools<br/>knowledge_search · calculator · http_get"]
-  SVC --> DB[("SQLite / Postgres")]
-  GUARD -.->|"decision saved first"| DB
-```
-
-One agent run:
-
-```mermaid
-sequenceDiagram
-  participant App
-  participant Core as Agent loop
-  participant Model
-  participant Guard
-  participant Tool
-  App->>Core: input (+ optional caller)
-  loop until an answer or a limit
-    Core->>Model: conversation + tool list
-    Model-->>Core: answer, or "call tool X"
-    Core->>Guard: may it?
-    Guard-->>Core: allowed / denied + reason (saved)
-    Core->>Tool: run it (only if allowed)
-    Tool-->>Core: result back to the model
-  end
-  Core-->>App: status, answer, full transcript
-```
-
-- **Workspace isolation:** every row and every query is scoped to the API key's workspace.
-- **The guard** (`x0r_guard`, standard library only) runs seven checks in order:
-  workspace, agent grant, operator grant, argument shape, known tool, argument schema, and
-  the tool's own rule (which can see the caller). The first "no" stops the run as
-  `blocked`.
-- **Evidence:** each decision is saved before the tool runs, with its reason, tool-call id
-  and caller. Read it at `GET /v1/policy/decisions`.
-- **Metering:** every run and every ingest adds token usage, and a monthly quota stops new
-  runs.
-
-The full tour, with every component, table, limit and weak spot, is in
-[docs/INTERNALS.md](docs/INTERNALS.md).
-
-## What's in the box
-
-- **Workspaces & API keys** — `x0r_<prefix>_<secret>`, hashed at rest, revocable.
-- **Ingestion** — JSON or UTF-8 file upload; paragraph-aware chunking with overlap.
-- **Retrieval** — hybrid vector + keyword search that degrades gracefully when
-  embeddings are unavailable.
-- **Agents** — system prompt, model, temperature, step limit, tool allowlist.
-- **Tools** — `knowledge_search`, bounded `calculator`, and disabled-by-default `http_get`
-  with host/DNS checks and known connection-validation gaps (see the security model).
-  Add your own ([example](examples/custom_tool.py)): every call is checked against the
-  tool's declared argument schema and the operator allowlist before it runs.
-- **Workspace policy** — upload a versioned TOML policy with `PUT /v1/policy` and
-  read the current revision with `GET /v1/policy`.
-- **Policy decision log** — read Core and SDK authorizations with
-  `GET /v1/policy/decisions`. Send SDK decisions with `POST /v1/policy/decisions`
-  or the SDK's `core_sink` hook.
-- **Guard for your own app** — no Core server needed: `wrap(OpenAI(), Policy(...))` checks
-  every tool call a model returns before your code runs it. See [docs/SDK.md](docs/SDK.md).
-- **Signed caller tokens** — carry "who this is for" to a proxy or connector that can't
-  vouch for it. See [docs/CALLER-TOKENS.md](docs/CALLER-TOKENS.md).
-- **Runs** — full transcript persisted: every model call, every tool call, every result.
-- **Metering** — monthly token quota per workspace, enforced with `429`, plus a usage
-  breakdown by kind.
-- **Evals** — golden-question suites scored per case, with pass rate.
-
-## Quickstart
-
-```bash
-python3 -m venv .venv && source .venv/bin/activate
-pip install -e packages/x0r-guard -e ".[dev]"
-
-cp .env.example .env
-x0r seed
-x0r serve
-```
-
-The seed command prints an API key. Ask the demo agent a question:
-
-```bash
-export X0R_KEY=x0r_...
-
-curl -s localhost:8000/v1/agents/agt_.../run \
-  -H "Authorization: Bearer $X0R_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"input":"Can I get a refund after 45 days?"}' | jq
-```
-
-You get back the answer, the retrieved sources, and the token cost:
-
-```json
-{
-  "status": "succeeded",
-  "output": "Here is what the knowledge base says:\n\n- Refunds are available within 30 days...",
-  "steps": [
-    {"type": "model", "tool_calls": [{"name": "knowledge_search"}]},
-    {"type": "tool", "tool": "knowledge_search", "result": {"count": 2}},
-    {"type": "model", "content": "..."}
-  ],
-  "prompt_tokens": 412,
-  "completion_tokens": 96,
-  "latency_ms": 3
-}
-```
-
-## Connecting a real model
-
-```bash
-# Any OpenAI-compatible endpoint.
-export X0R_PROVIDER=openai_compatible
-export X0R_OPENAI_BASE_URL=https://api.openai.com/v1   # or https://openrouter.ai/api/v1
-export X0R_OPENAI_API_KEY=sk-...
-export X0R_CHAT_MODEL=gpt-4o-mini
-export X0R_EMBEDDING_MODEL=text-embedding-3-small
-x0r serve
-```
-
-Works the same against a local model:
-
-```bash
-export X0R_OPENAI_BASE_URL=http://localhost:11434/v1   # Ollama
-export X0R_OPENAI_API_KEY=ollama
-export X0R_CHAT_MODEL=llama3.1
-```
-
-## Production
-
-SQLite is the demo/default. Postgres is the production path:
-
-```bash
-pip install -e packages/x0r-guard -e ".[postgres]"
-export X0R_DATABASE_URL=postgresql+asyncpg://x0r:x0r@localhost:5432/x0r
-```
-
-Docker:
-
-```bash
-docker compose up --build
-```
-
-Where Core is heading: [`docs/GATEWAY-PLAN.md`](docs/GATEWAY-PLAN.md).
-
-See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the design and the scaling path
-(pgvector, queues, multi-region), and [`docs/API.md`](docs/API.md) for the endpoint map.
-
-## Tests
-
-```bash
-pytest -q
-```
-
-The suite covers auth, ingestion, retrieval, the agent tool loop, tenant isolation,
-quota enforcement, and eval scoring — all against the mock provider, so it runs offline
-in about a second.
-
-## What this is not (yet)
-
-X0R Core v0.1 is a **strong foundation**, not a finished SaaS. Deliberately out of scope:
-
-- pgvector-backed ANN search (today: in-process cosine over the workspace's chunks)
-- Streaming responses and token-by-token output
-- A UI (the API + OpenAPI docs are the product surface)
-- Billing integration (Stripe is a thin layer over `/v1/usage`)
-- SSO / RBAC beyond workspace-scoped keys
-
-Those are the roadmap. If you need one of them for a specific deployment, that's the
-conversation.
-
-## License
-
-Apache-2.0. Use it, fork it, run it commercially.
-
----
-
-Built by [X0R Labs](https://x0r-labs.github.io/site/) — AI software, built to be the difference.
-
-## Security iteration
-
-Execution now checks an operator-controlled built-in tool allowlist before invoking a handler. Policy denials stop a run as `blocked`; execution limits return `limit_exceeded`. HTTP is denied by the operator policy by default, including for agents that list it. Custom tools require explicit policy implementation.
-
-Read [the security model and known limits](docs/SECURITY-MODEL.md) before deployment. Quotas are not hard spend caps; full trace redaction, end-user RBAC and connection-bound HTTP validation remain unfinished. Use synthetic data for evaluation.
-
-### Resource and evaluation follow-up
-
-HTTP fetching now streams under byte/time limits and rejects compressed responses and redirects. Calculator evaluation and API inputs have explicit limits. Evaluations cannot count blocked/failed/limited runs as passes, and quota stops preserve prior completed usage records. Read [the security model](docs/SECURITY-MODEL.md) for compatibility details and the remaining DNS, privacy and concurrent-budget gaps.
+Run `pytest -q` and `x0r security-demo` after changes. [Apache-2.0](LICENSE). Built by [X0R Labs](https://x0r-labs.github.io/site/).

@@ -1,6 +1,6 @@
 # Direction: X0R Guard
 
-Status: plan. Phases 1 to 3b and 4a (signed caller tokens) are implemented; the rest of phase 4 is planned, not shipped behavior.
+Phases 1 to 3b are implemented. In phase 4, 4a and 4b are done, 4c is in progress, and 4d through 4h are planned.
 
 ## The idea
 
@@ -44,7 +44,7 @@ Connectors are thin adapters that find tool calls wherever they appear and ask t
 | 2 | Guard extracted to `packages/x0r-guard` (`x0r_guard`): standard library only, no imports from tools, models, providers or the web app. `x0r_core.policy.authorize_tool` stays as a wrapper | Implemented |
 | 3a | Caller identity on runs (subject and attributes, vouched for by the API key) passed to tool rules; decision committed before the tool runs; decision linked to the tool-call ID | Implemented |
 | 3b | Python SDK wrapper (`x0r_guard.wrap`) that checks tool calls returned by any OpenAI-compatible client before the app runs them. See [SDK.md](SDK.md) | Implemented |
-| 4 | Connectors driven by the first customers: LiteLLM guardrail hook, MCP proxy in front of tool servers, with signed caller identity across the hop. Per-workspace policy, retention and redaction controls, tamper-evident decision log. Broken down in [PHASE-4-PLAN.md](PHASE-4-PLAN.md) | Planned |
+| 4 | Connectors driven by the first customers: LiteLLM guardrail hook, MCP proxy in front of tool servers, with signed caller identity across the hop. Per-workspace policy, retention and redaction controls, tamper-evident decision log. Broken down in [PHASE-4-PLAN.md](PHASE-4-PLAN.md) | 4a and 4b done, 4c in progress, 4d through 4h planned |
 
 Each phase lands as its own pull request with tests and keeps the existing API working.
 
