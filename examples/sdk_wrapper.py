@@ -69,28 +69,55 @@ POLICY = Policy(
 )
 
 
-def fake_call(text: str) -> tuple[str, dict]:
-    """A stand-in for the model: pick a tool and arguments from plain words."""
-    order = re.search(r"\b([A-Za-z]-\d+)\b", text)
-    amount = re.search(r"(?<![\w-])\$?(\d+(?:\.\d+)?)\b", text)
-    args: dict = {"order_id": order.group(1).upper() if order else "A-1"}
-    if "refund" in text.lower():
-        args["amount"] = float(amount.group(1)) if amount else 10
-        return "refund_order", args
-    return "lookup_order", args
+_ORDER = re.compile(r"\b([A-Za-z]-\d+)\b")
+_AMOUNT = re.compile(r"(?:\bfor\s+|\$)\s*(-?\$?[\d,]+(?:\.\d+)?)", re.IGNORECASE)
+_NEGATION = re.compile(r"\b(don'?t|do not|never|no|cancel|stop)\b", re.IGNORECASE)
+HELP = "Try: look up A-1 / refund A-1 for 20 / refund A-1 for $1,000 / refund B-77 for 5"
+
+
+def fake_call(text: str) -> tuple[str, dict] | str:
+    """A stand-in for the model: pick a tool and arguments from plain words.
+
+    Returns (tool, arguments), or a plain answer when the request isn't clear. It never
+    fills in an order or amount you didn't give, so what the guard checks is what you typed.
+    """
+    lower = text.lower()
+    orders = _ORDER.findall(text)
+    if _NEGATION.search(text):
+        return "Okay, I won't do anything."
+    if len(orders) != 1:
+        return "Which order? Name exactly one, like A-1. " + HELP
+    order_id = orders[0].upper()
+    if "refund" in lower:
+        amounts = _AMOUNT.findall(text)
+        if len(amounts) != 1:
+            return "How much? Say it like 'refund A-1 for 20'."
+        try:
+            amount = float(amounts[0].replace("$", "").replace(",", ""))
+        except ValueError:
+            return "I couldn't read that amount."
+        # A negative amount goes to the guard as asked: the schema denies it.
+        return "refund_order", {"order_id": order_id, "amount": amount}
+    if re.search(r"\b(look ?up|check|status|find|show)\b", lower):
+        return "lookup_order", {"order_id": order_id}
+    return "I can look up or refund an order. " + HELP
 
 
 def fake_model() -> httpx.Client:
     def answer(request: httpx.Request) -> httpx.Response:
         messages = json.loads(request.content)["messages"]
-        name, args = fake_call(messages[-1]["content"])
+        result = fake_call(messages[-1]["content"])
+        message: dict = {"role": "assistant", "content": None}
+        if isinstance(result, str):
+            message["content"] = result
+        else:
+            name, args = result
+            message["tool_calls"] = [{"id": "call_1", "type": "function", "function": {
+                "name": name, "arguments": json.dumps(args)}}]
         return httpx.Response(200, json={
             "id": "chatcmpl-demo", "object": "chat.completion", "created": 0, "model": "demo",
-            "choices": [{"index": 0, "finish_reason": "tool_calls", "message": {
-                "role": "assistant", "content": None,
-                "tool_calls": [{"id": "call_1", "type": "function", "function": {
-                    "name": name, "arguments": json.dumps(args)}}],
-            }}],
+            "choices": [{"index": 0, "message": message,
+                         "finish_reason": "stop" if message["content"] else "tool_calls"}],
         })
     return httpx.Client(transport=httpx.MockTransport(answer))
 
@@ -123,7 +150,7 @@ def main() -> None:
         ask(client, "Refund order B-77 for 900.")
         return
     print("You are user-42 and own orders A-1 and A-2. Refunds over 50 are blocked.")
-    print("Try: look up A-1 / refund A-1 for 20 / refund A-1 for 900 / refund B-77 for 5")
+    print(HELP)
     print("Empty line to quit.\n")
     while text := input("> ").strip():
         ask(client, text)
