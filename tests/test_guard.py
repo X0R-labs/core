@@ -175,3 +175,93 @@ def test_root_keywords_outside_the_allowlist_deny(root):
     from x0r_core.guard.engine import check_arguments
 
     assert check_arguments(root, {"v": "a"}) == "invalid_arguments"
+
+
+@pytest.mark.parametrize("value, ok", [
+    ([1, 2.0], True),
+    (["1", 2], False),
+    ([1, True], False),
+    ([1], False),
+    ([1, 2, 3, 4], False),
+    ([1, 1.0], False),
+    ("12", False),
+])
+def test_array_constraints(value, ok):
+    from x0r_guard.engine import check_arguments
+
+    schema = {"properties": {"values": {
+        "type": "array", "items": {"type": "number"},
+        "minItems": 2, "maxItems": 3, "uniqueItems": True,
+    }}}
+    assert (check_arguments(schema, {"values": value}) is None) is ok
+
+
+def test_nested_objects_and_array_equality():
+    from x0r_guard.engine import check_arguments
+
+    item = {
+        "type": "object", "properties": {"amount": {"type": "number"}},
+        "required": ["amount"], "additionalProperties": True,
+    }
+    schema = {"properties": {"orders": {
+        "type": "array", "items": item, "uniqueItems": True,
+        "enum": [[{"amount": 1}, {"amount": 2}], [{"amount": True}]],
+    }}}
+    assert check_arguments(schema, {"orders": [{"amount": 1.0}, {"amount": 2}]}) is None
+    for orders in (
+        [{"amount": 1, "extra": 2}], [{}], [{"amount": True}], [{"amount": 1}, {"amount": 1.0}],
+    ):
+        assert check_arguments(schema, {"orders": orders}) == "invalid_arguments"
+
+    # The item schema accepts a numeric value, but the enum contains a boolean.
+    assert check_arguments(schema, {"orders": [{"amount": 1}]}) == "invalid_arguments"
+
+
+@pytest.mark.parametrize("definitions", ["$defs", "definitions"])
+def test_local_references(definitions):
+    from x0r_guard.engine import check_arguments, schema_supported
+
+    schema = {
+        "$ref": f"#/{definitions}/Arguments",
+        definitions: {
+            "Arguments": {
+                "type": "object", "properties": {"order": {"$ref": f"#/{definitions}/Order"}},
+            },
+            "Order": {"type": "string", "minLength": 2},
+        },
+    }
+    assert schema_supported(schema)
+    assert check_arguments(schema, {"order": "A1"}) is None
+    assert check_arguments(schema, {"order": "A"}) == "invalid_arguments"
+
+
+@pytest.mark.parametrize("spec", [
+    {"$ref": "#/$defs/Loop"},
+    {"$ref": "#/$defs/Missing"},
+    {"$ref": "https://example.org/schema"},
+    {"type": "string", "pattern": "^a"},
+    {"type": "array", "items": {"type": "number"}, "minItems": True},
+    {"type": "array", "items": {"type": "number"}, "maxItems": -1},
+    {"type": "array", "items": {"type": "number"}, "uniqueItems": 1},
+])
+def test_unsupported_optional_schema_is_denied(spec):
+    from x0r_guard.engine import check_arguments, schema_supported
+
+    schema = {"properties": {"v": spec}, "$defs": {"Loop": {"$ref": "#/$defs/Loop"}}}
+    assert not schema_supported(schema)
+    assert check_arguments(schema, {}) == "invalid_arguments"
+
+
+def test_schema_depth_limit():
+    from x0r_guard.engine import MAX_SCHEMA_DEPTH, check_arguments, schema_supported
+
+    schema = {"type": "string"}
+    arguments = "value"
+    for _ in range(MAX_SCHEMA_DEPTH):
+        schema = {"type": "object", "properties": {"v": schema}}
+        arguments = {"v": arguments}
+    assert schema_supported(schema)
+    assert check_arguments(schema, arguments) is None
+    deeper = {"type": "object", "properties": {"v": schema}}
+    assert not schema_supported(deeper)
+    assert check_arguments(deeper, {"v": arguments}) == "invalid_arguments"

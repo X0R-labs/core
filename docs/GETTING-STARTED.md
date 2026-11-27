@@ -111,8 +111,8 @@ See [Caller tokens](CALLER-TOKENS.md) to set up signed caller identities.
 
 ## Employees using MCP tools
 
-Configure your MCP client to launch `x0r mcp-proxy` in front of your local
-stdio server. Start from the [Claude Desktop example](../examples/mcp/claude_desktop_config.json)
+Configure your MCP client to launch `x0r mcp-proxy`. For a local stdio server, start
+from the [Claude Desktop example](../examples/mcp/claude_desktop_config.json)
 and replace the paths and command with your own. Use a
 [TOML policy](../examples/policy.toml) to specify which tools and arguments employees
 can use.
@@ -123,6 +123,18 @@ Check the policy against the server's tool schemas before using the proxy.
 x0r mcp-proxy --check --policy /path/to/policy.toml -- orders-mcp
 ```
 
+For a Streamable HTTP server, the MCP client still uses stdio. Pass the endpoint
+with `--upstream` in place of the server command.
+
+```bash
+x0r mcp-proxy --policy /path/to/policy.toml --decision-log /path/to/decisions.jsonl \
+  --upstream https://orders.example.com/mcp --upstream-token-env ORDERS_MCP_TOKEN
+```
+
+HTTPS is required except for localhost and loopback IP addresses. If the upstream
+requires a bearer token, set the environment variable named by `--upstream-token-env`.
+For an HTTP policy check, use `--check --upstream URL` with the same token option if needed.
+
 The check lists each tool's allow-list and schema status. It exits with status 1
 when an allowed tool uses a schema the guard cannot check.
 
@@ -130,15 +142,25 @@ For live use, specify `--decision-log /path/to/decisions.jsonl` to save decision
 locally, `--core-url https://core.example.com` with `X0R_API_KEY` to save them to
 Core, or both. A call is denied if a configured destination fails to save the decision.
 Use `--block-resources` or `--block-prompts` to disable those MCP methods.
-The proxy denies tool calls that include arguments absent from the tool's declared input schema.
-A line larger than 8 MB from either the client or the server ends the proxy session.
+The guard supports typed arrays, nested objects and local schema references up to
+five levels deep, alongside scalar types and constraints. Every object rejects
+undeclared keys, including with `additionalProperties: true`. Stdio messages
+larger than 8 MB end the proxy session. See the
+[guard schema rules](SECURITY-MODEL.md) for details.
 
 If your policy uses caller rules, as the sample TOML policy does, set
 `X0R_CALLER_KEY` to the base64url audience verification key in the MCP client's
-environment and add `--caller-token-file /path/to/token` before `--`. Issue
+environment and add `--caller-token-file /path/to/token` to the proxy options. Issue
 [caller tokens](CALLER-TOKENS.md) for the `mcp` audience or set `--audience` to
-match your issuer. The proxy reads the file before every tool call. A client retry
-after a lost response can run the tool again.
+match your issuer. The proxy reads the file before every tool call.
+
+For safe retries within a proxy session, send a string of 1 to 200 characters in
+`tools/call`'s `params._meta.idempotencyKey`. For the same caller, tool and
+arguments, the proxy checks policy again, records the decision and replays the
+stored response with the retry's request ID. Reusing the key for a different call
+is denied with `idempotency_key_reused`. A matching call still in flight is
+denied with `idempotency_in_progress`. The proxy keeps up to 1,000 completed
+responses in memory for 10 minutes, dropping the oldest first.
 
 ## Releasing
 

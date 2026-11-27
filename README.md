@@ -60,7 +60,8 @@ See the [Phase 4 plan](docs/PHASE-4-PLAN.md).
 
 - [x] 4a. Signed caller identity
 - [x] 4b. Policy files and shared decision log
-- [ ] 4c. MCP guard proxy (in progress)
+- [x] 4c. MCP guard proxy (follow-ups include standalone HTTP GET events, per-request
+  caller tokens and a security-demo scenario)
 - [ ] 4d. LiteLLM connector (planned)
 - [ ] 4e. Hash-chained decision log (planned)
 - [ ] 4f. Retention and redaction (planned)

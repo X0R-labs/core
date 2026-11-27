@@ -10,7 +10,15 @@ Before any tool runs, built-in or custom, the execution service checks (policy v
 2. The tool is granted in the agent configuration.
 3. The tool is permitted by the operator-controlled `X0R_OPERATOR_TOOL_ALLOWLIST`.
 4. The tool is registered.
-5. The arguments match the tool's own declared `parameters` schema: required fields present, declared types (`string`, `integer`, `number`, `boolean`), `minLength`/`maxLength`, `minimum`/`maximum`. Undeclared arguments, untyped properties, blank required strings and non-finite numbers (NaN, Infinity) are denied; strings are capped at 8000 characters.
+5. The arguments match the tool's declared `parameters` schema. The guard supports
+   strings, integers, numbers, booleans, arrays with typed items, and nested objects.
+   It checks required fields, bounds on strings, numbers and array lengths, array uniqueness,
+   `enum`, and `const`. Local references into the root's `$defs` or `definitions` count
+   toward the five-level schema depth limit. Cyclic references, remote references and
+   unsupported keywords deny the call. Undeclared keys are denied at every level,
+   including with `additionalProperties: true`. Required strings must be nonblank.
+   Strings are capped at 8,000 characters, and numbers must be finite. For equality,
+   `1` and `1.0` match, and booleans are distinct from numbers.
 6. The tool's optional `authorize` hook allows the call. The hook gets the arguments and a `HookContext` with the `caller` (if the run has one), the `tool_call_id`, and Core's settings as `config`, so a rule like "only the caller's own record" can be written once. `http_get` uses this hook for its host allowlist, URL credential and port check. A hook that raises denies the call (`authorizer_error`).
 
 The default operator list is `knowledge_search,calculator`. HTTP remains unavailable unless an operator explicitly grants `http_get` and configures `X0R_HTTP_TOOL_ALLOWLIST`. Custom registry tools run only after the operator adds them to the allowlist, and only with arguments their schema accepts. Schema checks constrain argument shape, not what a handler does with valid input: a custom tool's handler is trusted code and must enforce its own business rules.

@@ -1,32 +1,38 @@
-"""Policy enforcement for newline-delimited MCP over stdio."""
+"""Policy enforcement for stdio and Streamable HTTP MCP upstreams."""
 from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
-import math
 import os
+import re
 import signal
 import stat
 import sys
+from collections import OrderedDict
 from collections.abc import Callable
 from concurrent.futures import Future
-from contextlib import asynccontextmanager, suppress
+from contextlib import aclosing, asynccontextmanager, suppress
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
+from ipaddress import ip_address
 from pathlib import Path
 from threading import Thread
+from time import monotonic
 from uuid import uuid4
 
+import httpx
 from x0r_guard.engine import (
     POLICY_VERSION,
-    PROPERTY_KEYWORDS,
-    ROOT_KEYWORDS,
     ActionRequest,
     Authorizer,
     Caller,
     Decision,
     check_action,
+)
+from x0r_guard.engine import (
+    schema_supported as schema_checkable,
 )
 from x0r_guard.identity import (
     MAX_TOKEN_LENGTH,
@@ -41,6 +47,9 @@ from x0r_guard.sdk import DecisionRecord
 LINE_LIMIT = 8 * 1024 * 1024
 SINK_TIMEOUT = 10
 SHUTDOWN_TIMEOUT = 2
+REPLAY_TTL = 600
+REPLAY_LIMIT = 1000
+SSE_LINE_END = re.compile(rb"[\r\n]")
 RESOURCE_METHODS = {"resources/list", "resources/read", "resources/templates/list"}
 PROMPT_METHODS = {"prompts/list", "prompts/get"}
 PASSTHROUGH = {"initialize", "ping", "tools/list"} | RESOURCE_METHODS | PROMPT_METHODS
@@ -64,36 +73,25 @@ class ToolListing:
     first_page: bool
 
 
-def schema_checkable(schema: object) -> bool:
-    # The engine checks supplied values. Check every property here, including optional ones.
-    if (not isinstance(schema, dict) or schema.keys() - ROOT_KEYWORDS
-            or schema.get("type", "object") != "object"
-            or type(schema.get("additionalProperties", False)) is not bool):
-        return False
-    properties = schema.get("properties", {})
-    required = schema.get("required", [])
-    if not isinstance(properties, dict) or not isinstance(required, list):
-        return False
-    if any(not isinstance(name, str) or name not in properties for name in required):
-        return False
-    for spec in properties.values():
-        if not isinstance(spec, dict) or spec.keys() - PROPERTY_KEYWORDS:
-            return False
-        kind = spec.get("type")
-        if kind not in ("string", "integer", "number", "boolean"):
-            return False
-        if "enum" in spec and (not isinstance(spec["enum"], list) or not spec["enum"]):
-            return False
-        for keyword in spec.keys() & {"minLength", "maxLength"}:
-            if kind != "string" or type(spec[keyword]) is not int or spec[keyword] < 0:
-                return False
-        for keyword in spec.keys() & {"minimum", "maximum"}:
-            value = spec[keyword]
-            if kind not in ("integer", "number"):
-                return False
-            if type(value) is not int and (type(value) is not float or not math.isfinite(value)):
-                return False
-    return True
+@dataclass
+class Replay:
+    fingerprint: bytes
+    caller: str | None = None
+    completed_at: float = 0
+    body: dict | None = None
+
+
+def call_key(message: dict) -> tuple[str, bytes] | None:
+    params = message.get("params")
+    meta = params.get("_meta") if isinstance(params, dict) else None
+    key = meta.get("idempotencyKey") if isinstance(meta, dict) else None
+    if not isinstance(key, str) or not 1 <= len(key) <= 200:
+        return None
+    canonical = json.dumps(
+        [params.get("name"), params.get("arguments", {})],
+        sort_keys=True, separators=(",", ":"),
+    ).encode("ascii")
+    return key, hashlib.sha256(canonical).digest()
 
 
 def caller_key(value: str) -> bytes:
@@ -201,6 +199,132 @@ async def upstream(command: list[str]):
                 await asyncio.wait_for(drain, SHUTDOWN_TIMEOUT)
 
 
+@dataclass(frozen=True)
+class HttpUpstream:
+    url: str
+    token: str | None
+
+    def __post_init__(self) -> None:
+        url = httpx.URL(self.url)
+        if not url.host or url.scheme not in {"https", "http"}:
+            raise ValueError("--upstream requires an HTTP or HTTPS URL")
+        if url.username or url.password:
+            raise ValueError("use --upstream-token-env for upstream credentials")
+        if url.scheme == "http" and url.host != "localhost":
+            try:
+                loopback = ip_address(url.host).is_loopback
+            except ValueError:
+                loopback = False
+            if not loopback:
+                raise ValueError("--upstream requires HTTPS except on localhost")
+
+    @asynccontextmanager
+    async def connect(self):
+        headers = {"Accept": "application/json, text/event-stream",
+                   "Content-Type": "application/json"}
+        if self.token is not None:
+            headers["Authorization"] = f"Bearer {self.token}"
+        async with httpx.AsyncClient(headers=headers, trust_env=False, timeout=30) as client:
+            yield HttpConnection(client, self.url)
+
+
+class HttpConnection:
+    def __init__(self, client: httpx.AsyncClient, url: str) -> None:
+        self.client = client
+        self.url = url
+        self.session_id: str | None = None
+        self.protocol_version: str | None = None
+
+    async def post(self, message: dict):
+        headers = {}
+        if self.session_id is not None:
+            headers["Mcp-Session-Id"] = self.session_id
+        if self.protocol_version is not None:
+            headers["MCP-Protocol-Version"] = self.protocol_version
+        method = message.get("method")
+        expects_reply = method is not None and "id" in message
+        try:
+            async with self.client.stream(
+                "POST", self.url, headers=headers, content=encode(message),
+            ) as response:
+                response.raise_for_status()
+                if not expects_reply and response.status_code == 202:
+                    return
+                if not expects_reply:
+                    raise ValueError("expected HTTP 202 for a message without a reply")
+                async for reply in http_messages(response):
+                    if "method" in reply:
+                        yield reply
+                        continue
+                    if "id" not in reply or reply["id"] != message["id"]:
+                        raise ValueError("unexpected JSON-RPC response id from HTTP upstream")
+                    if method == "initialize" and isinstance(reply.get("result"), dict):
+                        self.session_id = response.headers.get("Mcp-Session-Id")
+                        version = reply["result"].get("protocolVersion")
+                        if isinstance(version, str):
+                            self.protocol_version = version
+                    yield reply
+                    return
+        except httpx.HTTPStatusError as exc:
+            raise ValueError(f"HTTP upstream returned status {exc.response.status_code}") from exc
+        except httpx.HTTPError as exc:
+            raise ValueError("HTTP upstream connection failed") from exc
+        raise ValueError("HTTP upstream closed without a JSON-RPC response")
+
+
+async def http_messages(response: httpx.Response):
+    content_type = response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+    if content_type == "application/json":
+        body = bytearray()
+        async for chunk in response.aiter_bytes(chunk_size=65536):
+            body.extend(chunk)
+            if len(body) > LINE_LIMIT:
+                raise ValueError("HTTP upstream JSON response too large")
+        yield decode(body)
+    elif content_type == "text/event-stream":
+        buffer = bytearray()
+        fields = []
+        size = 0
+        first_line = True
+        skip_lf = False
+        async for chunk in response.aiter_bytes():
+            buffer.extend(chunk)
+            start = 0
+            while start < len(buffer):
+                if skip_lf:
+                    if buffer[start] == 10:
+                        start += 1
+                    skip_lf = False
+                match = SSE_LINE_END.search(buffer, start)
+                if match is None:
+                    break
+                end = match.start()
+                if end - start > LINE_LIMIT:
+                    raise ValueError("HTTP upstream SSE line too large")
+                line = bytes(buffer[start:end])
+                start = match.end()
+                skip_lf = match[0] == b"\r"
+                if first_line:
+                    line = line.removeprefix(b"\xef\xbb\xbf")
+                    first_line = False
+                if not line:
+                    if any(fields):
+                        yield decode(b"\n".join(fields))
+                    fields.clear()
+                    size = 0
+                elif line == b"data" or line.startswith(b"data:"):
+                    data = line[5:].removeprefix(b" ")
+                    size += len(data) + 1
+                    if size > LINE_LIMIT:
+                        raise ValueError("HTTP upstream SSE event too large")
+                    fields.append(data)
+            del buffer[:start]
+            if len(buffer) > LINE_LIMIT:
+                raise ValueError("HTTP upstream SSE line too large")
+    else:
+        raise ValueError("unexpected HTTP upstream content type")
+
+
 @asynccontextmanager
 async def client_reader():
     if not stat.S_ISREG(os.fstat(sys.stdin.fileno()).st_mode):
@@ -238,6 +362,9 @@ class Proxy:
         self.tools: dict[str, Tool | None] = {}
         self.tools_generation = 0
         self.pending: dict[str | int | None, ToolListing | None] = {}
+        self.replays: OrderedDict[str, Replay] = OrderedDict()
+        self.in_flight: dict[str, Replay] = {}
+        self.call_keys: dict[str | int | None, str] = {}
 
     async def record_decision(self, record: DecisionRecord) -> bool:
         saved = True
@@ -249,7 +376,9 @@ class Proxy:
                 saved = False
         return saved
 
-    async def decide(self, message: dict) -> Decision:
+    async def decide(
+        self, message: dict, keyed: tuple[str, Replay] | None = None,
+    ) -> Decision:
         params = message.get("params")
         params = params if isinstance(params, dict) else {}
         name = params.get("name")
@@ -267,15 +396,30 @@ class Proxy:
                 decision = Decision(False, "invalid_request")
             elif message["id"] in self.pending:
                 decision = Decision(False, "duplicate_request_id")
-            elif name in self.tools and self.tools[name] is None:
-                decision = Decision(False, "invalid_arguments")
             else:
-                decision = check_action(
-                    ActionRequest("mcp", "mcp", {name}, name, params.get("arguments", {}),
-                                  caller=caller, tool_call_id=call_id),
-                    operator_tools=self.policy.allow,
-                    tools={name: tool} if tool is not None else {},
-                )
+                if name in self.tools and tool is None:
+                    decision = Decision(False, "invalid_arguments")
+                else:
+                    decision = check_action(
+                        ActionRequest("mcp", "mcp", {name}, name, params.get("arguments", {}),
+                                      caller=caller, tool_call_id=call_id),
+                        operator_tools=self.policy.allow,
+                        tools={name: tool} if tool is not None else {},
+                    )
+                if keyed is not None:
+                    key, attempt = keyed
+                    attempt.caller = caller.subject if caller else None
+                    existing = self.in_flight.get(key) or self.replays.get(key)
+                    if existing is not None:
+                        if (existing.fingerprint != attempt.fingerprint
+                                or existing.caller != attempt.caller):
+                            decision = Decision(False, "idempotency_key_reused")
+                        elif decision.allowed:
+                            if existing.body is None:
+                                decision = Decision(False, "idempotency_in_progress")
+                            else:
+                                attempt.body = existing.body
+                                decision = Decision(True, "idempotency_replayed")
         record = DecisionRecord(
             tool=name or "(missing tool name)", tool_call_id=call_id,
             allowed=decision.allowed, reason=decision.reason,
@@ -304,13 +448,28 @@ class Proxy:
             print(f"mcp-proxy: dropped client notification {method!r}", file=sys.stderr)
             return False
         if method == "tools/call":
-            decision = await self.decide(message)
+            now = monotonic()
+            while self.replays:
+                oldest = next(iter(self.replays.values()))
+                if now - oldest.completed_at < REPLAY_TTL:
+                    break
+                self.replays.popitem(last=False)
+            identity = call_key(message)
+            keyed = (identity[0], Replay(identity[1])) if identity is not None else None
+            decision = await self.decide(message, keyed)
             if not decision.allowed:
                 reply(message, result={
                     "content": [{"type": "text", "text": f"Denied by policy: {decision.reason}"}],
                     "isError": True,
                 })
                 return False
+            if keyed is not None:
+                key, attempt = keyed
+                if attempt.body is not None:
+                    reply(message, **attempt.body)
+                    return False
+                self.in_flight[key] = attempt
+                self.call_keys[message["id"]] = key
         else:
             if (
                 method not in PASSTHROUGH
@@ -343,7 +502,19 @@ class Proxy:
                 self.tools_generation += 1
                 self.tools.clear()
         elif "id" in message:
-            listing = self.pending.pop(message["id"], None)
+            request_id = message["id"]
+            listing = self.pending.pop(request_id, None)
+            key = self.call_keys.pop(request_id, None)
+            if key is not None:
+                attempt = self.in_flight.pop(key)
+                # JSON-RPC errors are upstream outcomes too. Retrying them may repeat a side effect.
+                body = {field: message[field] for field in ("result", "error") if field in message}
+                if len(body) == 1:
+                    attempt.body = body
+                    attempt.completed_at = monotonic()
+                    self.replays[key] = attempt
+                    if len(self.replays) > REPLAY_LIMIT:
+                        self.replays.popitem(last=False)
             if listing is not None and "result" in message:
                 result = message["result"]
                 entries = tool_entries(result)
@@ -364,6 +535,41 @@ class Proxy:
                 result["tools"] = visible
         write_client(message)
         return None
+
+    async def run_http(self, upstream: HttpUpstream) -> int:
+        async with upstream.connect() as connection, client_reader() as readline:
+            async def exchange(message: dict):
+                async with aclosing(connection.post(message)) as replies:
+                    async for response in replies:
+                        error = self.accept_server(response)
+                        if error is not None:
+                            async with aclosing(connection.post(error)) as acknowledgments:
+                                async for _ in acknowledgments:
+                                    pass
+
+            reading = asyncio.create_task(readline())
+            active = {reading}
+            try:
+                while active:
+                    done, _ = await asyncio.wait(active, return_when=asyncio.FIRST_COMPLETED)
+                    active.difference_update(done)
+                    # Apply upstream changes before deciding the next client call.
+                    for task in done - {reading}:
+                        task.result()
+                    if reading in done and (line := reading.result()):
+                        message = decode(line)
+                        if await self.accept_client(message):
+                            if message.get("method") == "initialize" or "id" not in message:
+                                await exchange(message)
+                            else:
+                                active.add(asyncio.create_task(exchange(message)))
+                        reading = asyncio.create_task(readline())
+                        active.add(reading)
+                return 0
+            finally:
+                for task in active:
+                    task.cancel()
+                await asyncio.gather(*active, return_exceptions=True)
 
     async def run(self, command: list[str]) -> int:
         async with upstream(command) as child, client_reader() as readline:
@@ -399,7 +605,8 @@ class Proxy:
                 await asyncio.gather(requests, responses, return_exceptions=True)
 
 
-async def check_server(command: list[str], policy: PolicyFile) -> int:
+@asynccontextmanager
+async def check_stdio(command: list[str]):
     async with upstream(command) as child:
         async def request(request_id: int, method: str, params: dict) -> dict:
             child.stdin.write(encode({
@@ -421,11 +628,48 @@ async def check_server(command: list[str], policy: PolicyFile) -> int:
                         raise ValueError(f"upstream rejected {method}")
             raise ValueError(f"upstream closed stdout during {method}")
 
+        async def notify(message: dict):
+            child.stdin.write(encode(message))
+            await child.stdin.drain()
+
+        yield request, notify
+
+
+@asynccontextmanager
+async def check_http(upstream: HttpUpstream):
+    async with upstream.connect() as connection:
+        async def notify(message: dict):
+            async with aclosing(connection.post(message)) as replies:
+                async for _ in replies:
+                    pass
+
+        async def request(request_id: int, method: str, params: dict) -> dict:
+            message = {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}
+            async with aclosing(connection.post(message)) as replies:
+                async for response in replies:
+                    if "method" in response:
+                        if "id" in response:
+                            await notify({
+                                "jsonrpc": "2.0", "id": response["id"],
+                                "error": {"code": -32601, "message": "Method not available"},
+                            })
+                    elif isinstance(response.get("result"), dict):
+                        return response["result"]
+                    else:
+                        break
+            raise ValueError(f"upstream rejected {method}")
+
+        yield request, notify
+
+
+async def check_server(command: list[str] | HttpUpstream, policy: PolicyFile) -> int:
+    transport = check_http(command) if isinstance(command, HttpUpstream) else check_stdio(command)
+    async with transport as (request, notify):
         await request(1, "initialize", {
             "protocolVersion": "2025-03-26", "capabilities": {},
             "clientInfo": {"name": "x0r mcp-proxy", "version": "0.1.0"},
         })
-        child.stdin.write(encode({"jsonrpc": "2.0", "method": "notifications/initialized"}))
+        await notify({"jsonrpc": "2.0", "method": "notifications/initialized"})
         failed = False
         params: dict = {}
         cursors: set[str] = set()
