@@ -231,33 +231,37 @@ decisions for user X" when you know X.
 
 Depends on 4d (LiteLLM connector) and 4c (MCP guard proxy).
 
-- Give each person or tool its own X0R key that works only through the gateway. Keep
-  the real OpenAI and Anthropic keys only in the LiteLLM gateway. Log every gateway
-  call against its X0R key and check tool calls against policy.
-- Include a short setup guide. Use a firewall or managed DNS to block direct provider
-  API calls from laptops, including `api.openai.com` and `api.anthropic.com`. Allow the
-  gateway to reach those APIs. Push managed settings files to laptops so CLIs and
-  coding tools such as Cursor and Claude Code send model calls through the gateway
-  and MCP tool calls through the proxy.
+- Bind each X0R key to one owner, a person or service. The gateway uses that owner
+  as the caller or accepts a signed caller token whose subject matches the owner.
+  Deny mismatches. Keep the provider keys in the LiteLLM gateway, log every gateway
+  call against its X0R key, and check tool calls against policy.
+- Include a short setup guide. Block direct provider API access from laptops with an
+  egress firewall or secure web gateway, and allow the gateway to reach those APIs.
+  Use managed DNS as an extra layer because direct IP connections and DNS-over-HTTPS
+  can bypass DNS filtering. Push managed settings so laptops send model calls through
+  the gateway and MCP tool calls through the proxy.
 
-Done when: each gateway call is logged against its assigned key, a denied tool call is
-blocked, and the guide shows how to set up a managed laptop and verify that direct
-provider API calls are blocked.
+Done when: the gateway rejects caller mismatches, logs calls against their assigned
+keys, and blocks denied tool calls. The guide shows how to verify that direct provider
+API calls from a managed laptop are blocked.
 
 ### 4h. AI access inventory
 
-- Start with read-only access. Read third-party OAuth app grants from the Google
-  Workspace and Microsoft 365 admin APIs. List which AI apps, such as ChatGPT, Claude,
-  Gemini, and Copilot connectors, can reach company data, which users the grants cover,
-  and which scopes they grant.
-- Show the inventory alongside the decision log. Flag scopes by policy, including
-  full Drive or mail read-write access and admin scopes.
+- Start with read-only access to Google Workspace and Microsoft 365 admin APIs.
+  Inventory per-user delegated grants and app-only or tenant-wide access, including
+  Microsoft 365 application permissions and app role assignments, and Google
+  Workspace domain-wide delegation. Show which users or tenants the grants cover
+  and what access they give.
+- Identify AI apps with a maintained list of known AI vendors and app IDs, plus
+  admin tags. Show the inventory alongside the decision log. Flag any app with
+  broad scopes, even if it is absent from the list. This includes full Drive or
+  mail read-write access and admin scopes.
 - Add revocation after the read-only inventory ships. Let an admin revoke a grant
   through the provider's admin API and see its updated status in the inventory.
 
-Done when: admins can see AI grants, users, scopes, and policy flags from both platforms
-using read-only access. In the second release, an admin can revoke a grant and verify
-the result in the inventory.
+Done when: admins can see delegated and tenant-wide access, scopes, and policy flags
+from both platforms using read-only access. In the second release, an admin can revoke
+a grant and verify the result in the inventory.
 
 ## What X0R does not cover
 

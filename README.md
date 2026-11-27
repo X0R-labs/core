@@ -23,12 +23,14 @@ Core also handles document ingestion and search, run transcripts, token usage, a
 
 **Use Guard in your app.** Install it with `pip install x0r-guard` after the first release. For now, run `pip install ./packages/x0r-guard` from this checkout.
 
-Use your existing OpenAI-compatible `client`, `model`, and `tools` list with a `lookup_order` tool. Run from the checkout to load [the example policy](examples/policy.toml).
+Use your existing OpenAI-compatible `client`, `model`, and `tools` list with a `lookup_order` tool. Run from the checkout to load [the example policy](examples/policy.toml). Use the Core workspace API key from the [getting started guide](docs/GETTING-STARTED.md) as `core_api_key`. Core records allowed and blocked calls and their reasons in the workspace decision log.
 
 ```python
-from x0r_guard import Caller, Policy, wrap
+from x0r_guard import Caller, Policy, core_sink, wrap
 
-guarded = wrap(client, Policy.from_file("examples/policy.toml"))
+policy = Policy.from_file("examples/policy.toml",
+                          on_decision=core_sink("http://localhost:8000", core_api_key))
+guarded = wrap(client, policy)
 reply = guarded.chat.completions.create(
     model=model,
     messages=[{"role": "user", "content": "Look up order A-1."}],
@@ -40,15 +42,17 @@ tool_calls = reply.choices[0].message.tool_calls
 
 **Run Core.** From the checkout, start Core and Postgres. Compose uses the offline mock provider by default.
 
+Copy [`.env.example`](.env.example) to `.env` if you haven’t already. Set `X0R_CALLER_KEY_SECRET` and `X0R_BOOTSTRAP_TOKEN` in `.env`, using a separate `openssl rand -hex 32` value for each. Reuse those values across restarts. Changing the caller key secret invalidates existing caller tokens. Changing the bootstrap token makes the old token stop working.
+
+Compose reads `.env` for variable substitution and passes the settings listed in `docker-compose.yml` to Core. Exported shell variables take precedence.
+
 ```bash
-export X0R_CALLER_KEY_SECRET="$(openssl rand -hex 32)"
-export X0R_BOOTSTRAP_TOKEN="$(openssl rand -hex 32)"
 docker compose up --build -d
 ```
 
-Open `http://localhost:8000/docs`. The [getting started guide](docs/GETTING-STARTED.md) shows how to create a workspace and upload a policy. Keep the caller key secret stable across restarts.
+Open `http://localhost:8000/docs`. The [getting started guide](docs/GETTING-STARTED.md) shows how to create a workspace and upload a policy.
 
-For a local SQLite demo, run `pip install -e packages/x0r-guard -e ".[dev]"`, then `x0r seed` and `x0r serve`. For a real model, set `X0R_PROVIDER=openai_compatible` and configure the endpoint, API key, and models in [`.env.example`](.env.example). See the [security model](docs/SECURITY-MODEL.md) before deployment.
+For a local SQLite demo, run `pip install -e packages/x0r-guard -e ".[dev]"`, then `x0r seed` and `x0r serve`. For a real model, copy `.env.example` to `.env` if needed, then edit `.env` to set `X0R_PROVIDER=openai_compatible` and configure the endpoint, API key, and chat model. When running Core directly, it also reads the embedding model setting from `.env`. See the [security model](docs/SECURITY-MODEL.md) before deployment.
 
 ## Progress
 
