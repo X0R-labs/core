@@ -1,31 +1,60 @@
-# Direction: Core as a secure AI gateway
+# Direction: X0R Guard
 
-Status: plan. Phase 1 is implemented; later phases are proposals, not shipped behavior.
+Status: plan. Phases 1 and 2 are implemented; later phases are proposals, not shipped behavior.
 
-## Why
+## The idea
 
-Core already has most of what a gateway between applications and models needs: workspace
-API keys, any OpenAI-compatible model endpoint, per-workspace token metering, and a policy
-check before every tool call. Today those pieces sit underneath one application (document
-search plus agents). The plan makes the gateway the product and the agent features one
-application built on it.
+Model gateways (LiteLLM, Portkey, Kong, Cloudflare and others) already route calls to many
+providers and handle keys, budgets and usage. We don't build another one.
+
+We build the part they leave open: **checking what an agent is allowed to do.** Before a tool
+call runs, the guard answers one question:
+
+> Can this agent take this action, for this caller, with these arguments?
+
+Every answer is logged with its reason. Saving that record durably *before* the action runs
+is phase 3; today Core writes it in the same transaction as the run.
+
+## Shape
+
+The guard is its own small piece with no dependency on any gateway, model SDK or database.
+Connectors are thin adapters that find tool calls wherever they appear and ask the guard.
 
 ```
-  apps ───────────▶  gateway  ────────────▶  model endpoints
-  (agents, search,   keys · quotas · policy    (OpenAI-compatible:
-   evals, yours)     decision log · metering    hosted or self-hosted)
+                 ┌──────────────────────────────┐
+                 │  X0R Guard                   │
+                 │  rules · decisions · reasons │
+                 │  check_action(request)       │
+                 └──────────────┬───────────────┘
+                                │
+     ┌──────────────┬───────────┴──────┬─────────────────┐
+  Core agents   Python SDK wrapper  LiteLLM connector   MCP proxy
+  (today)       (phase 3)           (phase 4)           (phase 4)
 ```
+
+- Same rules everywhere: a policy written once applies in every connector.
+- No lock-in: if a gateway changes, only its connector changes. We never fork one.
+- Customers keep the gateway and provider they already use.
 
 ## Phases
 
 | Phase | Scope | State |
 | --- | --- | --- |
-| 1 | Schema-driven tool policy (custom tools supported, same reason codes); append-only `policy_decisions` log with `GET /v1/policy/decisions` | Implemented |
-| 2 | Package split: `x0r_core.gateway` (providers, keys, metering, policy, decision log) and `x0r_core.apps` (ingest, retrieval, agents, evals). Old import paths re-export for one release | Proposed |
-| 3 | Model gateway endpoint: OpenAI-compatible chat completions through the gateway, with workspace keys, quotas, a per-workspace model allowlist and metering | Proposed |
-| 4 | Policy per workspace instead of only process-wide settings; retention and redaction controls for stored transcripts; tamper-evident decision log | Proposed |
+| 1 | Schema-driven tool policy (custom tools supported); append-only `policy_decisions` log with `GET /v1/policy/decisions` | Implemented |
+| 2 | Guard extracted to `x0r_core.guard`: standard library only, no imports from tools, models, providers or the web app. `x0r_core.policy.authorize_tool` stays as a wrapper | Implemented |
+| 3 | Python SDK wrapper that checks tool calls returned by any OpenAI-compatible client; signed caller and resource identity; decision saved before the action runs; decision linked to the tool-call ID | Proposed |
+| 4 | Connectors driven by the first customers: LiteLLM guardrail hook, MCP proxy in front of tool servers. Per-workspace policy, retention and redaction controls, tamper-evident decision log | Proposed |
 
-Each phase lands as its own pull request with tests, and keeps the existing API working.
+Each phase lands as its own pull request with tests and keeps the existing API working.
+
+## Who it is for
+
+Small and medium businesses, SaaS teams and agencies whose AI agents can take real actions:
+writing to a CRM, a ticket system, a database or an outside API. Agencies matter most, because
+one agency brings many client projects.
+
+It pairs with the security review: the review finds the risky action, the guard enforces the
+rule that stops it, and a test proves the bad action is blocked while the good one still works.
 
 ## Constraints every phase keeps
 
@@ -35,4 +64,5 @@ Each phase lands as its own pull request with tests, and keeps the existing API 
 - Claims stay matched to evidence: mock-provider results show orchestration, not real-model
   security, and nothing here is a client engagement, audit or security guarantee.
 - Argument values are not written to the decision log.
+- The guard package imports only the standard library.
 - Apache-2.0; no new required runtime service for the SQLite demo path.

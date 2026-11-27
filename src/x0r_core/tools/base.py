@@ -7,6 +7,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import Settings
+from ..guard import Authorizer
 
 
 @dataclass
@@ -17,9 +18,9 @@ class ToolContext:
 
 
 Handler = Callable[..., Awaitable[Any]]
-# Extra, tool-specific policy check run after the generic argument checks.
-# Returns a denial reason, or None to allow.
-Authorizer = Callable[[dict[str, Any], Settings], "str | None"]
+# ``authorize`` is an extra, tool-specific policy check run after the generic argument
+# checks. Core calls it with the arguments and its Settings; it returns a denial reason,
+# or None to allow.
 
 
 @dataclass
