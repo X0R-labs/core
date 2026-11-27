@@ -28,10 +28,12 @@ import json
 from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Literal
 
 from .engine import POLICY_VERSION, ActionRequest, Authorizer, Caller, Decision, check_action
+from .policy_file import PolicyFileError, load_policy_file
 
 _SCOPE = "sdk"
 # Client attributes that can't return tool calls. Everything else (responses, beta,
@@ -60,6 +62,7 @@ class DecisionRecord:
     caller_subject: str | None
     policy_version: str
     decided_at: str
+    policy_digest: str | None = None
 
 
 @dataclass(frozen=True)
@@ -83,6 +86,19 @@ class Policy:
     on_decision: Callable[[DecisionRecord], None] | None = None
     on_denied: Literal["raise", "remove"] = "raise"
     config: Any = None
+    policy_digest: str | None = None
+
+    @classmethod
+    def from_file(cls, path: str | Path, **kwargs: Any) -> Policy:
+        """Load the allowlist and rules, with optional Python rules for other tools."""
+        policy = load_policy_file(path)
+        python_rules = kwargs.pop("rules", None) or {}
+        overlap = policy.rules.keys() & python_rules.keys()
+        if overlap:
+            tool = min(overlap)
+            raise PolicyFileError(f"{path}: rules.{tool} already has file rules")
+        return cls(allow=policy.allow, rules={**policy.rules, **python_rules},
+                   policy_digest=policy.digest, **kwargs)
 
     def __post_init__(self) -> None:
         if isinstance(self.allow, (str, bytes)):
@@ -336,6 +352,7 @@ class _Checker:
             caller_subject=caller.subject if caller else None,
             policy_version=POLICY_VERSION,
             decided_at=datetime.now(UTC).isoformat(),
+            policy_digest=self.policy.policy_digest,
         )
 
 
