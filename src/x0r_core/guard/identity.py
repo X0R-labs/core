@@ -26,6 +26,7 @@ import binascii
 import hashlib
 import hmac
 import json
+import re
 import time
 from collections.abc import Mapping
 from typing import Any
@@ -72,7 +73,16 @@ def _clean_text(value: object, limit: int, what: str) -> str:
         raise ValueError(f"{what} must be a non-empty string of at most {limit} characters")
     if any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
         raise ValueError(f"{what} must not contain control characters")
+    _utf8(value, what)
     return value
+
+
+def _utf8(value: str, what: str) -> None:
+    # JSON allows lone surrogates like "\ud800"; nothing downstream can store them.
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        raise ValueError(f"{what} must be valid Unicode") from None
 
 
 def normalize_attributes(attributes: Mapping[str, Any]) -> dict[str, str | tuple[str, ...]]:
@@ -89,6 +99,7 @@ def normalize_attributes(attributes: Mapping[str, Any]) -> dict[str, str | tuple
                 raise ValueError(f"attribute {name!r} is too long")
             if any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
                 raise ValueError(f"attribute {name!r} must not contain control characters")
+            _utf8(value, f"attribute {name!r}")
             clean[name] = value
         elif isinstance(value, (list, tuple)):
             if len(value) > MAX_LIST_ITEMS:
@@ -135,7 +146,7 @@ def sign_caller(
     issued = int(time.time() if now is None else now)
     attrs = normalize_attributes(caller.attributes)
     payload = {
-        "kid": _clean_text(key_id, 64, "key_id"),
+        "kid": _key_id(key_id),
         "sub": _clean_text(caller.subject, MAX_SUBJECT, "subject"),
         "attrs": {k: list(v) if isinstance(v, tuple) else v for k, v in attrs.items()},
         "aud": _clean_text(audience, 200, "audience"),
@@ -151,6 +162,12 @@ def sign_caller(
     return token
 
 
+def _key_id(key_id: object) -> str:
+    if not isinstance(key_id, str) or not _KEY_ID.fullmatch(key_id):
+        raise ValueError("key_id must be 1 to 64 letters, digits, '_' or '-'")
+    return key_id
+
+
 def _malformed(message: str) -> CallerTokenError:
     return CallerTokenError("caller_token_malformed", message)
 
@@ -164,7 +181,7 @@ def _payload(token: object) -> tuple[str, bytes, dict[str, Any]]:
     try:
         body = _b64decode(parts[2])
         signature = _b64decode(parts[3])
-        payload = json.loads(body.decode("ascii"), parse_constant=_reject_constant)
+        payload = json.loads(body.decode("utf-8"), parse_constant=_reject_constant)
     except (ValueError, UnicodeDecodeError, binascii.Error, RecursionError) as exc:
         raise _malformed("caller token can't be decoded") from exc
     if not isinstance(payload, dict):
@@ -183,9 +200,12 @@ def token_key_id(token: object) -> str:
     """
     _, _, payload = _payload(token)
     kid = payload.get("kid")
-    if not isinstance(kid, str) or not kid or len(kid) > 64:
+    if not isinstance(kid, str) or not _KEY_ID.fullmatch(kid):
         raise _malformed("caller token has no valid key id")
     return kid
+
+
+_KEY_ID = re.compile(r"[A-Za-z0-9_\-]{1,64}")
 
 
 def verify_caller(

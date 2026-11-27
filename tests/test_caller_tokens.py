@@ -51,7 +51,10 @@ def _resign(token: str, change) -> str:
     _, _, body, _ = token.split(".")
     payload = json.loads(base64.urlsafe_b64decode(body + "=" * (-len(body) % 4)))
     change(payload)
-    raw = json.dumps(payload).encode()
+    try:  # unescaped UTF-8 JSON, unless a lone surrogate forces escapes
+        raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    except UnicodeEncodeError:
+        raw = json.dumps(payload).encode()
     body = base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
     signed = f"x0r.v1.{body}"
     sig = hmac.new(audience_key(SECRET, "mcp-proxy"), signed.encode(), hashlib.sha256).digest()
@@ -333,3 +336,31 @@ async def test_caller_attribute_lists_reach_rules(client):
         "input": "x", "caller": {"subject": "u", "attributes": {"orders": ["ok", "a\nb"]}},
     })
     assert bad.status_code == 422
+
+
+def test_unicode_payloads_and_bad_key_ids():
+    caller = Caller("José", {"city": "Zürich", "tags": ("café",)})
+    token = _sign(caller)
+    assert _verify(token) == caller
+    # Unescaped UTF-8 JSON, signed correctly, is accepted too.
+    raw = _resign(token, lambda p: None)
+    assert _verify(raw).subject == "José"
+    for kid in ("\ud800", "ck 1", "ck/1", "x" * 65):
+        bad = _resign(token, lambda p, kid=kid: p.update(kid=kid))
+        with pytest.raises(CallerTokenError) as info:
+            token_key_id(bad)
+        assert info.value.reason == "caller_token_malformed"
+    lone = _resign(token, lambda p: p.update(sub="a\ud800"))
+    assert _reason(lone) == "caller_token_malformed"
+    with pytest.raises(ValueError):
+        _sign(key_id="ck 1")
+
+
+async def test_surrogate_key_id_gets_a_401_not_a_crash(client):
+    await client.post("/v1/caller-keys", json={})
+    agent_id = await _agent(client)
+    body = base64.urlsafe_b64encode(b'{"kid":"\\ud800"}').rstrip(b"=").decode()
+    resp = await client.post(f"/v1/agents/{agent_id}/run",
+                             json={"input": "x", "caller_token": f"x0r.v1.{body}.AA"})
+    assert resp.status_code == 401
+    assert resp.json()["detail"]["reason"] == "caller_token_malformed"
