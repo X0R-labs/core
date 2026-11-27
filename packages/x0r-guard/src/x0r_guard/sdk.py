@@ -92,7 +92,7 @@ class Policy:
     def from_file(cls, path: str | Path, **kwargs: Any) -> Policy:
         """Load the allowlist and rules, with optional Python rules for other tools."""
         policy = load_policy_file(path)
-        python_rules = kwargs.pop("rules", None) or {}
+        python_rules = dict(kwargs.pop("rules", None) or {})  # one copy, checked and merged
         overlap = policy.rules.keys() & python_rules.keys()
         if overlap:
             tool = min(overlap)
