@@ -115,7 +115,7 @@ class CallerIn(BaseModel):
     attributes: dict[
         Annotated[str, Field(min_length=1, max_length=64)],
         Annotated[str, Field(max_length=200)]
-        | Annotated[list[Annotated[str, Field(min_length=1, max_length=200)]],
+        | Annotated[list[Annotated[str, Field(min_length=1, max_length=200, pattern=r"\S")]],
                     Field(max_length=100)],
     ] = Field(
         default_factory=dict, max_length=20
@@ -141,7 +141,8 @@ class CallerIn(BaseModel):
 class RunIn(BaseModel):
     input: str = Field(min_length=1, max_length=32_000)
     caller: CallerIn | None = None
-    caller_token: str | None = Field(default=None, max_length=8192)
+    # No length limit here: an oversized token reaches the verifier and gets its 401 reason.
+    caller_token: str | None = None
 
     @model_validator(mode="after")
     def _one_caller(self) -> RunIn:
@@ -160,6 +161,7 @@ class CallerKeyIn(BaseModel):
 class CallerKeyOut(ORMModel):
     id: str
     name: str
+    signing: bool
     created_at: datetime
     revoked_at: datetime | None
 

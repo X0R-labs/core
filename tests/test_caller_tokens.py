@@ -167,7 +167,7 @@ async def test_mint_and_use_a_token_for_a_run(client):
     assert (await client.post("/v1/caller-tokens", json={
         "caller": {"subject": "u"}})).status_code == 409
     key = (await client.post("/v1/caller-keys", json={"name": "proxy"})).json()
-    assert "secret" not in key
+    assert "secret" not in key and "salt" not in key and key["signing"] is True
     listed = (await client.get("/v1/caller-keys")).json()
     assert [k["id"] for k in listed] == [key["id"]] and "secret" not in listed[0]
 
@@ -245,17 +245,67 @@ async def test_revoked_key_stops_its_tokens_and_rotation_works(client):
     new = (await client.post("/v1/caller-keys", json={"name": "new"})).json()
     run = f"/v1/agents/{agent_id}/run"
 
-    # Both keys are active: the old token still works, new tokens use the new key.
+    # A new key only verifies at first: tokens are still signed with the old one, so
+    # proxies have time to install the new verifier key.
+    assert new["signing"] is False
+    minted = (await client.post("/v1/caller-tokens", json={"caller": {"subject": "u"}})).json()
+    assert minted["key_id"] == old["id"]
     assert (await client.post(run, json={"input": "x", "caller_token": token})).status_code \
         == 200
-    minted = (await client.post("/v1/caller-tokens", json={
-        "caller": {"subject": "u"}})).json()
+
+    activated = (await client.post(f"/v1/caller-keys/{new['id']}/activate")).json()
+    assert activated["signing"] is True
+    minted = (await client.post("/v1/caller-tokens", json={"caller": {"subject": "u"}})).json()
     assert minted["key_id"] == new["id"]
+    keys = {k["id"]: k["signing"] for k in (await client.get("/v1/caller-keys")).json()}
+    assert keys == {old["id"]: False, new["id"]: True}
 
     assert (await client.delete(f"/v1/caller-keys/{old['id']}")).status_code == 204
     resp = await client.post(run, json={"input": "x", "caller_token": token})
     assert resp.status_code == 401
     assert resp.json()["detail"]["reason"] == "caller_signature_invalid"
+
+    # Revoking the signing key leaves none: minting waits for an activation.
+    await client.delete(f"/v1/caller-keys/{new['id']}")
+    assert (await client.post("/v1/caller-tokens", json={
+        "caller": {"subject": "u"}})).status_code == 409
+
+
+async def test_key_creation_is_retry_safe(client):
+    headers = {"Idempotency-Key": "req-1"}
+    first = (await client.post("/v1/caller-keys", json={}, headers=headers)).json()
+    again = await client.post("/v1/caller-keys", json={}, headers=headers)
+    assert again.status_code == 201 and again.json()["id"] == first["id"]
+    assert len((await client.get("/v1/caller-keys")).json()) == 1
+
+
+async def test_server_secret_is_required_and_kept_out_of_the_database(client, monkeypatch):
+    from x0r_core.config import get_settings
+
+    key = (await client.post("/v1/caller-keys", json={})).json()
+    token = await _token(client)
+    agent_id = await _agent(client)
+    monkeypatch.setattr(get_settings(), "caller_key_secret", "another-server-secret-" + "y" * 16)
+    # Same database, different server secret: old tokens no longer verify.
+    resp = await client.post(f"/v1/agents/{agent_id}/run",
+                             json={"input": "x", "caller_token": token})
+    assert resp.status_code == 401
+    monkeypatch.setattr(get_settings(), "caller_key_secret", "")
+    assert (await client.post("/v1/caller-keys", json={})).status_code == 503
+    assert (await client.post(f"/v1/caller-keys/{key['id']}/verifier",
+                              json={"audience": "p"})).status_code == 503
+
+
+async def test_oversized_token_and_blank_list_items(client):
+    await client.post("/v1/caller-keys", json={})
+    agent_id = await _agent(client)
+    resp = await client.post(f"/v1/agents/{agent_id}/run",
+                             json={"input": "x", "caller_token": "x" * 10_000})
+    assert resp.status_code == 401
+    assert resp.json()["detail"]["reason"] == "caller_token_malformed"
+    resp = await client.post(f"/v1/agents/{agent_id}/run", json={
+        "input": "x", "caller": {"subject": "u", "attributes": {"orders": ["A-1", "  "]}}})
+    assert resp.status_code == 422
 
 
 async def test_keys_and_tokens_stay_in_their_workspace(client, workspace_factory):

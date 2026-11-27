@@ -25,13 +25,19 @@ sequenceDiagram
 
 ## In Core
 
+Set `X0R_CALLER_KEY_SECRET` on the server first (at least 32 characters). Each key's
+secret is derived from it and a random salt, so the database never holds a secret, and a
+copy of it (or a backup) can't sign callers. Changing the server secret invalidates every
+caller key.
+
 | Call | What it does |
 | --- | --- |
-| `POST /v1/caller-keys` | Makes a signing key. Its secret stays in Core. At most 5 active per workspace |
+| `POST /v1/caller-keys` | Makes a key. The first key signs at once; later ones only verify until activated. At most 5 active per workspace. Send `Idempotency-Key` to make retries safe |
+| `POST /v1/caller-keys/{id}/activate` | Makes this the one key new tokens are signed with |
 | `POST /v1/caller-keys/{id}/verifier` | Returns the verify key for one `audience` (base64url). Refused for `x0r-core` |
 | `GET /v1/caller-keys` | Lists keys, without secrets |
 | `DELETE /v1/caller-keys/{id}` | Revokes a key. Every run that starts afterwards refuses its tokens |
-| `POST /v1/caller-tokens` | Signs `{caller, audience, ttl_seconds}` with the newest active key |
+| `POST /v1/caller-tokens` | Signs `{caller, audience, ttl_seconds}` with the signing key |
 | `POST /v1/agents/{id}/run` | Accepts `caller_token` instead of `caller` (not both). The audience must be `x0r-core` |
 
 A bad token stops the run before it starts: `401` with `detail.reason` set to one of
@@ -85,10 +91,11 @@ rule as `("A-1", "A-2")`, and nothing is split on commas.
 
 ## Rotating keys
 
-1. Create a new key and give its verify key to your proxies next to the old one.
-   `verify_caller` accepts any key in `keys`.
-2. Core signs new tokens with the newest key on its own.
-3. When old tokens have expired, revoke the old key in Core and remove it from your
+1. Create a new key. It only verifies for now, so nothing changes yet.
+2. Give its verify key to your proxies next to the old one. `verify_caller` accepts any
+   key in `keys`.
+3. Activate the new key. From then on, Core signs new tokens with it.
+4. When the old tokens have expired, revoke the old key in Core and remove it from your
    proxies.
 
 ## Limits
@@ -97,7 +104,7 @@ rule as `("A-1", "A-2")`, and nothing is split on commas.
   refuse its tokens for every run that starts afterwards. A run that already checked its
   token keeps going. A proxy holding a verify key stops accepting tokens only when you
   remove the key from it.
-- Root secrets are stored in Core's database as is, because signing needs them. Protect
-  the database like the API key table.
+- Whoever has both the database and `X0R_CALLER_KEY_SECRET` can sign callers. Keep the
+  server secret out of the database and its backups.
 - Anyone with the workspace API key can mint a token for any caller. The token proves
   that the app vouched for the caller. It doesn't prove the user logged in.

@@ -10,6 +10,7 @@ TEST_DIR = Path(tempfile.mkdtemp(prefix="x0r-test-"))
 os.environ["X0R_DATABASE_URL"] = f"sqlite+aiosqlite:///{TEST_DIR / 'test.db'}"
 os.environ["X0R_PROVIDER"] = "mock"
 os.environ["X0R_BOOTSTRAP_TOKEN"] = "test-bootstrap"
+os.environ["X0R_CALLER_KEY_SECRET"] = "test-caller-key-secret-" + "x" * 16
 
 from httpx import ASGITransport, AsyncClient  # noqa: E402
 

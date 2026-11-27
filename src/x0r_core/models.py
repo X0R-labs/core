@@ -3,7 +3,16 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -53,18 +62,23 @@ class ApiKey(Base):
 
 
 class CallerKey(Base):
-    """A secret that signs caller tokens for one workspace.
+    """A key that signs caller tokens for one workspace.
 
-    The secret is stored as is, because checking a token needs it. Treat this table like
-    the API key table: anyone who can read it can sign callers for the workspace.
+    No secret is stored here. The key's secret is derived from the server's
+    ``X0R_CALLER_KEY_SECRET`` and this row's random ``salt``, so a copy of the database
+    alone can't sign callers. ``signing`` marks the one key new tokens are signed with;
+    every key that isn't revoked still verifies.
     """
 
     __tablename__ = "caller_keys"
+    __table_args__ = (UniqueConstraint("workspace_id", "request_key"),)
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: new_id("ck_"))
     workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id"), index=True)
     name: Mapped[str] = mapped_column(String(120), default="default")
-    secret: Mapped[str] = mapped_column(String(128))
+    salt: Mapped[str] = mapped_column(String(64))
+    signing: Mapped[bool] = mapped_column(Boolean, default=False)
+    request_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 

@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     max_http_response_bytes: int = Field(default=256 * 1024, ge=1024, le=8 * 1024 * 1024)
     http_tool_timeout: float = Field(default=10.0, gt=0, le=60)
     bootstrap_token: str = ""
+    # Server secret that caller-key secrets are derived from. Kept out of the database, so a
+    # database copy alone can't sign callers. At least 32 characters. Caller keys are
+    # unavailable until it's set. Changing it invalidates every caller key.
+    caller_key_secret: str = ""
     cors_origins: str = "*"
 
     @property

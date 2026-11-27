@@ -645,7 +645,7 @@ erDiagram
 | --- | --- | --- |
 | `workspaces` | `id` (`ws_…`), `name`, `plan`, `monthly_token_quota` | The tenant. Everything else points here |
 | `api_keys` | `prefix`, `key_hash` (unique), `last_used_at`, `revoked_at` | Hash only, never the key |
-| `caller_keys` | `id` (`ck_…`), `name`, `secret`, `revoked_at` | Signs caller tokens. The root secret never leaves Core; proxies get per-audience verify keys |
+| `caller_keys` | `id` (`ck_…`), `name`, `salt`, `signing`, `revoked_at` | Signs caller tokens. No secret is stored: it's derived from `X0R_CALLER_KEY_SECRET` and the salt |
 | `documents` | `title`, `source`, `mime`, `content`, `meta` (JSON) | Full original text |
 | `chunks` | `document_id`, `ordinal`, `content`, `tokens`, `embedding` (JSON list) | Deleted with their document |
 | `agents` | `system_prompt`, `provider`, `model`, `tools` (JSON list), `temperature`, `max_steps` (default 6) | |
@@ -693,6 +693,7 @@ They are defined in `config.py`.
 | `X0R_MAX_UPLOAD_BYTES` | 5 MB | Upload size limit |
 | `X0R_MAX_HTTP_RESPONSE_BYTES` / `X0R_HTTP_TOOL_TIMEOUT` | 256 KB / 10 s | `http_get` limits |
 | `X0R_BOOTSTRAP_TOKEN` | empty (off) | Allows `POST /v1/workspaces` |
+| `X0R_CALLER_KEY_SECRET` | empty (off) | Server secret caller keys are derived from. 32+ characters. Keep it out of the database |
 | `X0R_CORS_ORIGINS` | `*` | Browsers allowed to call the API |
 | `X0R_REQUEST_TIMEOUT` | 60 s | Provider HTTP timeout |
 

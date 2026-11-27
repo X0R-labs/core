@@ -53,8 +53,9 @@ vouches for it (Core). Through a proxy, nothing vouches for it, so it gets signe
 - New reason codes: `caller_signature_invalid`, `caller_expired`, `caller_wrong_audience`,
   `caller_token_malformed`.
   A bad token denies the call. It never falls back to "no caller".
-- Core: `POST /v1/caller-keys` (create; the secret stays in Core), `/verifier` for a
-  per-audience verify key, `GET` and `DELETE` to
+- Core: `POST /v1/caller-keys` (create; secrets are derived from a server secret, never
+  stored), `/activate` to switch the signing key, `/verifier` for a per-audience verify
+  key, `GET` and `DELETE` to
   list and revoke, and `POST /v1/caller-tokens` to mint with the newest key. Run requests
   accept `caller_token` instead of `caller`, for audience `x0r-core`.
 - Short lifetimes (5 minutes by default) and no revocation list in this phase.
