@@ -161,3 +161,11 @@ async def test_core_and_sdk_policy_cases(
     guarded = wrap(DictClient(_reply(_call(tool, arguments))), policy, caller=caller)
     _create(guarded, tools=[spec.schema()])
     assert [(item.allowed, item.reason) for item in records] == [(allowed, reason)]
+
+
+async def test_upload_rejects_text_that_is_not_utf8(client):
+    body = '{"policy": "version = 1\\ud800"}'
+    response = await client.put(
+        "/v1/policy", content=body, headers={"Content-Type": "application/json"},
+    )
+    assert response.status_code == 422

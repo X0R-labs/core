@@ -223,7 +223,11 @@ class WorkspacePolicyIn(BaseModel):
     @field_validator("policy")
     @classmethod
     def _check_size(cls, value: str) -> str:
-        if len(value.encode("utf-8")) > 65536:
+        try:
+            size = len(value.encode("utf-8"))
+        except UnicodeEncodeError as exc:
+            raise ValueError("policy must be valid UTF-8 text") from exc
+        if size > 65536:
             raise ValueError("policy must be at most 64 KB in UTF-8")
         return value
 
@@ -244,14 +248,22 @@ class PolicyDecisionIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     decision_id: UUID
-    tool: str = Field(min_length=1, max_length=120)
-    tool_call_id: str | None = Field(default=None, max_length=4096)
+    tool: str = Field(min_length=1, max_length=4096)
+    tool_call_id: str | None = Field(default=None, max_length=65536)  # stored hashed
     allowed: StrictBool
-    reason: str = Field(min_length=1, max_length=1000)
-    caller_subject: str | None = Field(default=None, max_length=200)
+    reason: str = Field(min_length=1, max_length=65536)
+    caller_subject: str | None = Field(default=None, max_length=4096)
     policy_version: str = Field(min_length=1, max_length=10)
     policy_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     decided_at: datetime
+
+    @field_validator("tool", "reason", "caller_subject")
+    @classmethod
+    def _trim(cls, value: str | None, info) -> str | None:
+        # Trim to what the log keeps, the same way run decisions are stored, so a long
+        # value from the SDK is recorded instead of rejected.
+        limits = {"tool": 120, "reason": 1000, "caller_subject": 200}
+        return value[:limits[info.field_name]] if value is not None else None
 
     @field_validator("decided_at", mode="before")
     @classmethod

@@ -109,6 +109,12 @@ def _add_missing_columns(sync_conn) -> None:
                         }
                     ),
                 )
+    if inspector.has_table("policy_decisions"):
+        # Rows from before ``source`` existed were all made by Core runs.
+        sync_conn.execute(text(
+            "UPDATE policy_decisions SET source = 'core' "
+            "WHERE source IS NULL AND decision_key IS NULL"
+        ))
 
 
 async def init_db() -> None:

@@ -67,8 +67,6 @@ async def test_post_decisions(client, workspace_factory):
 
 @pytest.mark.parametrize("overrides", [
     {"decision_id": "bad"},
-    {"tool": "x" * 121},
-    {"caller_subject": "x" * 201},
     {"decided_at": "123456789"},
     {"policy_digest": "bad"},
     {"arguments": {"private": "value"}},
@@ -137,3 +135,21 @@ def test_sink_failure_closes_wrapper(monkeypatch, status, attempts):
 def test_sink_refuses_remote_http():
     with pytest.raises(ValueError, match="HTTPS"):
         core_sink("http://core.example", "fake-key")
+
+
+async def test_long_sdk_values_are_trimmed_not_rejected(client):
+    item = decision(tool="t" * 300, reason="r" * 2000, caller_subject="c" * 500)
+    response = await client.post(DECISIONS, json={"decisions": [item]})
+    assert response.status_code == 200
+    row = (await client.get(DECISIONS)).json()[0]
+    assert (len(row["tool"]), len(row["reason"]), len(row["caller_subject"])) == (120, 1000, 200)
+
+
+async def test_upload_maps_earlier_decisions_to_the_revision(client):
+    from x0r_guard import load_policy_text
+
+    digest = load_policy_text(CALCULATOR_POLICY.encode("utf-8")).digest
+    await client.post(DECISIONS, json={"decisions": [decision(policy_digest=digest)]})
+    assert (await client.get(DECISIONS)).json()[0]["policy_revision"] is None
+    await upload(client, CALCULATOR_POLICY)
+    assert (await client.get(DECISIONS)).json()[0]["policy_revision"] == 1

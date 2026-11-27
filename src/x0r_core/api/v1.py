@@ -539,6 +539,14 @@ async def put_policy(payload: WorkspacePolicyIn, session: SessionDep, workspace:
         uploaded = WorkspacePolicy(workspace_id=workspace_id, revision=revision,
                                    digest=policy.digest, source=payload.policy)
         session.add(uploaded)
+        # Decisions posted before Core knew this file get its revision now.
+        await session.execute(
+            update(PolicyDecision)
+            .where(PolicyDecision.workspace_id == workspace_id,
+                   PolicyDecision.policy_digest == policy.digest,
+                   PolicyDecision.policy_revision.is_(None))
+            .values(policy_revision=revision)
+        )
         try:
             await session.commit()
         except IntegrityError:
