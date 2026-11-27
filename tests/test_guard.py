@@ -133,16 +133,15 @@ def test_guard_imports_only_the_standard_library():
     code = (
         "import json, sys\n"
         "before = set(sys.modules)\n"
-        "import x0r_core.guard\n"
+        "import x0r_guard\n"
         "new = sorted(set(sys.modules) - before)\n"
         "print(json.dumps(new))\n"
     )
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
     new = json.loads(out.stdout)
-    ours = [m for m in new if m.split(".")[0] == "x0r_core"]
+    ours = [m for m in new if m.split(".")[0] == "x0r_guard"]
     outside = [m for m in new if m not in ours and m.split(".")[0] not in sys.stdlib_module_names]
-    assert {"x0r_core.guard", "x0r_core.guard.engine"} <= set(ours)
-    assert all(m == "x0r_core" or m.startswith("x0r_core.guard") for m in ours)
+    assert {"x0r_guard", "x0r_guard.engine"} <= set(ours)
     assert outside == []
 
 

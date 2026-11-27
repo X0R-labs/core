@@ -1,0 +1,19 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "x0r-guard"
+version = "0.1.0"
+description = "Policy checks for tool calls and signed caller tokens."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/X0R-labs/core"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/x0r_guard"]

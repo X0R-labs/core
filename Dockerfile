@@ -7,6 +7,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+COPY packages/x0r-guard ./packages/x0r-guard
+RUN pip install ./packages/x0r-guard
+
 COPY pyproject.toml README.md ./
 COPY src ./src
 

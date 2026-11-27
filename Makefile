@@ -1,7 +1,7 @@
 .PHONY: install dev test lint seed serve smoke docker clean
 
 install:
-	python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
+	python3 -m venv .venv && .venv/bin/pip install -e packages/x0r-guard -e ".[dev]"
 
 dev:
 	.venv/bin/x0r serve --reload
@@ -10,7 +10,7 @@ test:
 	.venv/bin/python -m pytest -q
 
 lint:
-	.venv/bin/ruff check src tests
+	.venv/bin/ruff check src tests examples packages
 
 seed:
 	.venv/bin/x0r seed

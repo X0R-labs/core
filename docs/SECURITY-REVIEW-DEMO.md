@@ -8,7 +8,7 @@ Requires Python 3.11 or 3.12. From a checkout of Core:
 
 ```bash
 python3 -m venv /tmp/x0r-demo-venv
-/tmp/x0r-demo-venv/bin/python -m pip install .
+/tmp/x0r-demo-venv/bin/python -m pip install ./packages/x0r-guard .
 /tmp/x0r-demo-venv/bin/x0r security-demo
 ```
 

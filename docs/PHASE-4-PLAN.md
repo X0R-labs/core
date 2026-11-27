@@ -47,7 +47,7 @@ vouches for it (Core). Through a proxy, nothing vouches for it, so it gets signe
 - The app signs a small token, `x0r.v1.<payload>.<sig>`. The payload is base64url JSON:
   `{kid, sub, attrs, aud, iat, exp}`, and the signature is HMAC-SHA256 with a per-workspace
   secret. That's standard library only, so the guard boundary holds.
-- `x0r_core.guard.identity`: `sign_caller(caller, key_id=, secret=, audience=, ttl=)` and
+- `x0r_guard.identity`: `sign_caller(caller, key_id=, secret=, audience=, ttl=)` and
   `verify_caller(token, keys=, audience=) -> Caller`. `keys` maps key ids to secrets, so
   several can be active while keys rotate.
 - New reason codes: `caller_signature_invalid`, `caller_expired`, `caller_wrong_audience`,
@@ -231,7 +231,8 @@ The rules from GATEWAY-PLAN.md still hold. In addition:
 - A decision change bumps `POLICY_VERSION`. A policy file change bumps only
   `policy_revision`.
 - Each connector fails closed. If it can't check something, it refuses it.
-- Connectors are extras. A plain `pip install x0r-core` gets no new dependencies.
+- Connectors are extras. A plain `pip install x0r-core` gets only `x0r-guard` added
+  (standard library only), and no connector dependencies.
 - `x0r security-demo` gets a connector scenario once 4c lands.
 
 ## Decisions

@@ -27,6 +27,7 @@ services:
       X0R_OPENAI_BASE_URL: ${X0R_OPENAI_BASE_URL:-https://api.openai.com/v1}
       X0R_OPENAI_API_KEY: ${X0R_OPENAI_API_KEY:-}
       X0R_CHAT_MODEL: ${X0R_CHAT_MODEL:-gpt-4o-mini}
+      X0R_CALLER_KEY_SECRET: ${X0R_CALLER_KEY_SECRET:-}
       X0R_BOOTSTRAP_TOKEN: ${X0R_BOOTSTRAP_TOKEN:-}
     ports:
       - "8000:8000"

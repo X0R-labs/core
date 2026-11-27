@@ -6,7 +6,7 @@ code sees it. Paths the wrapper can't check are refused, not passed through.
 
 ```python
 from openai import OpenAI
-from x0r_core.guard import Caller, Policy, wrap
+from x0r_guard import Caller, Policy, wrap
 
 client = wrap(OpenAI(), Policy(allow=["lookup_order", "refund_order"]))
 

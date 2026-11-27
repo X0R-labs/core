@@ -59,7 +59,7 @@ audience. So give each proxy its own audience name, and trust it only for that a
 Without Core, you hold the root secret yourself (at least 32 random bytes):
 
 ```python
-from x0r_core.guard import Caller, CallerTokenError, audience_key, sign_caller, verify_caller
+from x0r_guard import Caller, CallerTokenError, audience_key, sign_caller, verify_caller
 
 token = sign_caller(Caller("user-42", {"orders": ("A-1", "A-2")}),
                     key_id="ck_1", secret=ROOT, audience="mcp-proxy", ttl=300)

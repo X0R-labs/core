@@ -4,12 +4,14 @@
 
 Self-hosted. Provider-agnostic. Metered.
 
+[Getting started with Guard, Core, or MCP tools](docs/GETTING-STARTED.md)
+
 X0R Core is a small, complete backend for putting AI agents on top of a company's own
 documents: ingest, retrieve, run tool-calling agents, grade them, and meter every token —
 without handing your data or your bill to a platform you don't control.
 
 ```bash
-pip install -e ".[dev]"
+pip install -e packages/x0r-guard -e ".[dev]"
 x0r seed        # demo workspace: documents + agent + eval suite, no API key needed
 x0r serve       # http://127.0.0.1:8000/docs
 ```
@@ -85,7 +87,7 @@ sequenceDiagram
 ```
 
 - **Workspace isolation:** every row and every query is scoped to the API key's workspace.
-- **The guard** (`x0r_core.guard`, standard library only) runs seven checks in order:
+- **The guard** (`x0r_guard`, standard library only) runs seven checks in order:
   workspace, agent grant, operator grant, argument shape, known tool, argument schema, and
   the tool's own rule (which can see the caller). The first "no" stops the run as
   `blocked`.
@@ -123,7 +125,7 @@ The full tour, with every component, table, limit and weak spot, is in
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
+pip install -e packages/x0r-guard -e ".[dev]"
 
 cp .env.example .env
 x0r seed
@@ -183,7 +185,7 @@ export X0R_CHAT_MODEL=llama3.1
 SQLite is the demo/default. Postgres is the production path:
 
 ```bash
-pip install -e ".[postgres]"
+pip install -e packages/x0r-guard -e ".[postgres]"
 export X0R_DATABASE_URL=postgresql+asyncpg://x0r:x0r@localhost:5432/x0r
 ```
 

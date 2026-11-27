@@ -26,13 +26,69 @@ jobs:
           cache: pip
 
       - name: Install
-        run: pip install -e ".[dev]"
+        run: pip install -e packages/x0r-guard -e ".[dev]"
 
       - name: Lint
-        run: ruff check src tests
+        run: ruff check src tests examples packages
 
       - name: Test
         run: pytest -q
         env:
           X0R_PROVIDER: mock
           X0R_DATABASE_URL: "sqlite+aiosqlite:///:memory:"
+
+  packages:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+
+      - name: Build distributions
+        run: |
+          python -m pip install build
+          python -m build --outdir dist packages/x0r-guard
+          python -m build --outdir dist .
+
+      - name: Check standalone guard wheel
+        run: |
+          python -m venv "$RUNNER_TEMP/guard"
+          guard_python="$RUNNER_TEMP/guard/bin/python"
+          "$guard_python" -m pip install --no-index dist/x0r_guard-*.whl
+          "$guard_python" -I -c "import x0r_guard"
+          "$guard_python" -I - <<'PY'
+          import sys
+
+          before = set(sys.modules)
+          import x0r_guard
+
+          outside = {
+              name for name in set(sys.modules) - before
+              if name.split(".")[0] not in sys.stdlib_module_names | {"x0r_guard"}
+          }
+          assert not outside, sorted(outside)
+          PY
+
+  image:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - name: Build and start Core
+        run: |
+          docker build --tag x0r-core:ci .
+          docker run --detach --name x0r-core --publish 127.0.0.1:8000:8000 x0r-core:ci
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent --show-error http://127.0.0.1:8000/health; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs x0r-core
+          exit 1

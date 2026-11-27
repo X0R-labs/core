@@ -1,62 +1,14 @@
-"""X0R Guard: decides whether an agent may take an action.
+"""The guard now lives in the ``x0r-guard`` package (``import x0r_guard``).
 
-This package uses only the standard library. It knows nothing about models, gateways,
-databases or the web app, so any connector can call it.
+This keeps old imports working: ``x0r_core.guard`` and ``x0r_core.guard.engine``,
+``.identity`` and ``.sdk`` are the very same modules as in ``x0r_guard``.
 """
-from .engine import (
-    MAX_STRING_LENGTH,
-    POLICY_VERSION,
-    ActionRequest,
-    Authorizer,
-    Caller,
-    Decision,
-    HookContext,
-    ToolPolicy,
-    check_action,
-    check_arguments,
-)
-from .identity import (
-    CallerTokenError,
-    audience_key,
-    sign_caller,
-    token_key_id,
-    verify_caller,
-)
-from .sdk import (
-    DecisionNotRecorded,
-    DecisionRecord,
-    GuardedClient,
-    GuardError,
-    Policy,
-    ToolCallDenied,
-    UnguardedAttribute,
-    UnguardedCall,
-    wrap,
-)
+import sys
 
-__all__ = [
-    "MAX_STRING_LENGTH",
-    "POLICY_VERSION",
-    "ActionRequest",
-    "Authorizer",
-    "Caller",
-    "Decision",
-    "HookContext",
-    "ToolPolicy",
-    "check_action",
-    "check_arguments",
-    "CallerTokenError",
-    "audience_key",
-    "token_key_id",
-    "sign_caller",
-    "verify_caller",
-    "DecisionNotRecorded",
-    "DecisionRecord",
-    "GuardError",
-    "GuardedClient",
-    "Policy",
-    "ToolCallDenied",
-    "UnguardedAttribute",
-    "UnguardedCall",
-    "wrap",
-]
+from x0r_guard import *  # noqa: F403
+from x0r_guard import __all__ as __all__
+from x0r_guard import engine, identity, sdk
+
+for _module in (engine, identity, sdk):
+    sys.modules[f"{__name__}.{_module.__name__.rsplit('.', 1)[1]}"] = _module
+del _module

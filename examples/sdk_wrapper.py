@@ -1,6 +1,6 @@
 """Guard your own OpenAI app in one line: no Core server needed.
 
-    pip install -e . openai
+    pip install -e packages/x0r-guard -e . openai
     python examples/sdk_wrapper.py            # offline: a fake model asks for a refund
     python examples/sdk_wrapper.py --play     # type requests yourself and watch the guard
     OPENAI_API_KEY=sk-... python examples/sdk_wrapper.py --play --live

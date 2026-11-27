@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _package_version
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,7 +12,10 @@ from .config import get_settings
 from .db import dispose_db, init_db
 from .schemas import HealthOut
 
-VERSION = "0.1.0"
+try:
+    VERSION = _package_version("x0r-core")
+except PackageNotFoundError:  # running from a source tree that isn't installed
+    VERSION = "0.0.0+unknown"
 
 
 @asynccontextmanager
