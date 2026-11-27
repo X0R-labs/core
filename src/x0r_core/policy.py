@@ -7,6 +7,9 @@ from __future__ import annotations
 from hashlib import sha256
 from typing import TYPE_CHECKING
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from .config import Settings
 from .guard import (
     MAX_STRING_LENGTH,
@@ -14,9 +17,12 @@ from .guard import (
     ActionRequest,
     Caller,
     Decision,
+    HookContext,
+    PolicyFile,
     check_action,
     check_arguments,
 )
+from .models import WorkspacePolicy
 
 if TYPE_CHECKING:
     from .tools.base import Tool
@@ -61,3 +67,28 @@ def authorize_tool(
     return check_action(
         request, operator_tools=operator_tools(settings), tools=registry, config=settings,
     )
+
+
+async def current_workspace_policy(
+    session: AsyncSession, workspace_id: str,
+) -> WorkspacePolicy | None:
+    return await session.scalar(
+        select(WorkspacePolicy).where(WorkspacePolicy.workspace_id == workspace_id)
+        .order_by(WorkspacePolicy.revision.desc()).limit(1)
+    )
+
+
+def authorize_policy_file(
+    policy: PolicyFile, tool: str, arguments: dict, context: HookContext,
+) -> Decision:
+    if tool not in policy.allow:
+        return Decision(False, "not_in_policy_file")
+    rule = policy.rules.get(tool)
+    if rule is not None:
+        try:
+            reason = rule(arguments, context)
+        except Exception:  # noqa: BLE001 - a failing hook denies
+            reason = "authorizer_error"
+        if reason is not None:
+            return Decision(False, reason)
+    return Decision(True, "granted")

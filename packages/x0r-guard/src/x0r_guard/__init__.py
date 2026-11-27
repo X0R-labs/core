@@ -34,6 +34,7 @@ from .sdk import (
     UnguardedCall,
     wrap,
 )
+from .sink import core_sink
 
 __all__ = [
     "MAX_STRING_LENGTH",
@@ -64,4 +65,5 @@ __all__ = [
     "UnguardedAttribute",
     "UnguardedCall",
     "wrap",
+    "core_sink",
 ]

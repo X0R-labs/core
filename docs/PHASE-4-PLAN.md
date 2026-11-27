@@ -30,7 +30,7 @@ flowchart LR
 | # | Piece | Why it comes here | Size |
 | --- | --- | --- | --- |
 | 4a | Signed caller identity | Every connector crosses a hop. The caller must arrive in a form a proxy can trust | S |
-| 4b | Policy as a file, decision sink | One policy for Core, SDK and connectors, and one place to see every decision | M |
+| 4b (built) | Policy as a file, decision sink | One policy for Core, SDK and connectors, and one place to see every decision | M |
 | 4c | MCP guard proxy | Checks at the moment a tool actually runs. Works with any MCP client | M |
 | 4d | LiteLLM connector | For teams that already route through LiteLLM | S |
 | 4e | Hash-chained decision log | Makes edits and deletions detectable | S |
@@ -68,6 +68,8 @@ their reason, rotation works, and the guard still imports only the standard libr
 
 ### 4b. Policy as a file, and a shared decision sink
 
+Built for Core and the SDK. Connector integration follows in 4c and 4d.
+
 A policy file that Core, `wrap()` and both connectors load the same way. It's TOML, so
 `tomllib` from the standard library reads it.
 
@@ -88,10 +90,10 @@ caller_owns = { argument = "order_id", attribute = "orders" }
   Python today, and Python rules still work for anything else.
 - An unknown key or rule type fails at load time. It never becomes "allow".
 - `Policy.from_file(path)` for the SDK. Core gains a `workspace_policies` table, with
-  `PUT /v1/policy` to upload a file and a stored revision number.
+  `PUT /v1/policy` to upload a file and `GET /v1/policy` to fetch the current revision.
 - Every decision records which policy made it: `policy_digest` (SHA-256 of the file's
-  bytes, always set) and `policy_revision` (Core's number for an uploaded file, empty for
-  a local file Core has never seen). Both appear in `GET /v1/policy/decisions`.
+  bytes when a file is used) and `policy_revision` (Core's number for an uploaded file,
+  empty for a local file Core has never seen). Both appear in `GET /v1/policy/decisions`.
 - A run loads the policy and its revision once, as one snapshot, and carries it through
   every decision in that run. An upload during a run doesn't change what the run uses
   or what its decisions say.
@@ -102,10 +104,9 @@ caller_owns = { argument = "order_id", attribute = "orders" }
   The record also carries `policy_digest`, which Core maps to a revision when it knows
   the file. Fail-closed rules match the in-process ones.
 
-Done when: the same file gives the same decisions in Core, `wrap()` and a connector
-(one shared test table), bad files are rejected with a clear message, decisions from
-the sink show up in `GET /v1/policy/decisions` once each, even when retried, and each
-decision names the exact policy that made it.
+Core and `wrap()` share policy rule test cases. Invalid uploads return a validation
+error, and retried sink decisions appear once in `GET /v1/policy/decisions`. The log
+identifies the file used for each decision made under a file policy.
 
 ### 4c. MCP guard proxy
 

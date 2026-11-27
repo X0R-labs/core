@@ -1,9 +1,18 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Annotated, Any
+from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictInt,
+    field_validator,
+    model_validator,
+)
 
 
 class ORMModel(BaseModel):
@@ -208,6 +217,62 @@ class RunOut(ORMModel):
     created_at: datetime
 
 
+class WorkspacePolicyIn(BaseModel):
+    policy: str = Field(max_length=65536)
+
+    @field_validator("policy")
+    @classmethod
+    def _check_size(cls, value: str) -> str:
+        if len(value.encode("utf-8")) > 65536:
+            raise ValueError("policy must be at most 64 KB in UTF-8")
+        return value
+
+
+class WorkspacePolicyOut(ORMModel):
+    revision: int
+    digest: str
+    policy: str = Field(validation_alias="source")
+    created_at: datetime
+
+    @field_validator("created_at")
+    @classmethod
+    def _created_at_utc(cls, value: datetime) -> datetime:
+        return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
+class PolicyDecisionIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decision_id: UUID
+    tool: str = Field(min_length=1, max_length=120)
+    tool_call_id: str | None = Field(default=None, max_length=4096)
+    allowed: StrictBool
+    reason: str = Field(min_length=1, max_length=1000)
+    caller_subject: str | None = Field(default=None, max_length=200)
+    policy_version: str = Field(min_length=1, max_length=10)
+    policy_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    decided_at: datetime
+
+    @field_validator("decided_at", mode="before")
+    @classmethod
+    def _iso_datetime(cls, value: Any) -> datetime:
+        if not isinstance(value, str) or ("T" not in value and " " not in value):
+            raise ValueError("decided_at must be an ISO datetime")
+        parsed = datetime.fromisoformat(value)
+        return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
+
+
+class PolicyDecisionsIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decisions: list[PolicyDecisionIn] = Field(max_length=100)
+
+
+class PolicyDecisionsStored(BaseModel):
+    stored: int
+    duplicates: int
+
+
 class PolicyDecisionOut(ORMModel):
     id: int
     run_id: str | None
@@ -218,7 +283,18 @@ class PolicyDecisionOut(ORMModel):
     allowed: bool
     reason: str
     policy_version: str
+    policy_digest: str | None
+    policy_revision: int | None
+    source: str | None
+    decision_key: str | None
+    decided_at: datetime | None
     created_at: datetime
+
+    @field_validator("decided_at")
+    @classmethod
+    def _decided_at_utc(cls, value: datetime | None) -> datetime | None:
+        # SQLite returns timestamps without their timezone.
+        return value.replace(tzinfo=UTC) if value is not None and value.tzinfo is None else value
 
 
 # ── evals ────────────────────────────────────────────────────────────────────

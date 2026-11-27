@@ -8,6 +8,7 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -150,6 +151,18 @@ class Run(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class WorkspacePolicy(Base):
+    __tablename__ = "workspace_policies"
+    __table_args__ = (UniqueConstraint("workspace_id", "revision"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: new_id("pol_"))
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    revision: Mapped[int] = mapped_column(Integer)
+    digest: Mapped[str] = mapped_column(String(64))
+    source: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class PolicyDecision(Base):
     """Append-only record of every tool-call authorization, allowed or denied.
 
@@ -158,6 +171,10 @@ class PolicyDecision(Base):
     """
 
     __tablename__ = "policy_decisions"
+    __table_args__ = (
+        Index("ix_policy_decisions_workspace_decision_key", "workspace_id", "decision_key",
+              unique=True),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id"), index=True)
@@ -169,6 +186,11 @@ class PolicyDecision(Base):
     allowed: Mapped[bool] = mapped_column(Boolean)
     reason: Mapped[str] = mapped_column(Text)  # custom hooks can return any reason
     policy_version: Mapped[str] = mapped_column(String(10))
+    policy_digest: Mapped[str | None] = mapped_column(String(64))
+    policy_revision: Mapped[int | None] = mapped_column(Integer)
+    source: Mapped[str | None] = mapped_column(String(20))
+    decision_key: Mapped[str | None] = mapped_column(String(64))
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, index=True
     )

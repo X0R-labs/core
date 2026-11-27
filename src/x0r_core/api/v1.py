@@ -10,11 +10,21 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, UploadFile, status
 from sqlalchemy import delete, func, select, text, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 
 from ..config import get_settings
 from ..deps import ApiKeyDep, SessionDep, WorkspaceDep, require_bootstrap
-from ..guard import CallerTokenError, audience_key, sign_caller, token_key_id, verify_caller
+from ..guard import (
+    CallerTokenError,
+    PolicyFileError,
+    audience_key,
+    load_policy_text,
+    sign_caller,
+    token_key_id,
+    verify_caller,
+)
 from ..models import (
     Agent,
     CallerKey,
@@ -25,8 +35,9 @@ from ..models import (
     PolicyDecision,
     Run,
     Workspace,
+    WorkspacePolicy,
 )
-from ..policy import policy_tool_call_id
+from ..policy import current_workspace_policy, policy_tool_call_id
 from ..schemas import (
     CORE_AUDIENCE,
     AgentIn,
@@ -42,6 +53,8 @@ from ..schemas import (
     EvalSuiteOut,
     IngestOut,
     PolicyDecisionOut,
+    PolicyDecisionsIn,
+    PolicyDecisionsStored,
     RunIn,
     RunOut,
     SearchIn,
@@ -52,6 +65,8 @@ from ..schemas import (
     WorkspaceCreate,
     WorkspaceCreated,
     WorkspaceOut,
+    WorkspacePolicyIn,
+    WorkspacePolicyOut,
 )
 from ..security import generate_key
 from ..services import agents as agent_service
@@ -496,6 +511,94 @@ async def list_runs(
         )
     ).scalars()
     return list(rows)
+
+
+@router.put("/policy", response_model=WorkspacePolicyOut)
+async def put_policy(payload: WorkspacePolicyIn, session: SessionDep, workspace: WorkspaceDep):
+    try:
+        policy = load_policy_text(payload.policy.encode("utf-8"))
+    except PolicyFileError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    workspace_id = workspace.id
+    dialect = session.get_bind().dialect.name
+    for attempt in range(3):
+        if dialect == "postgresql":
+            await session.execute(
+                text("SELECT pg_advisory_xact_lock(hashtext(:k))"),
+                {"k": f"workspace-policy|{workspace_id}"},
+            )
+        elif dialect == "sqlite":
+            # Take SQLite's writer lock via the pending API key update before reading.
+            await session.flush()
+        current = await current_workspace_policy(session, workspace_id)
+        if current is not None and current.digest == policy.digest:
+            await session.commit()
+            return current
+        revision = current.revision + 1 if current else 1
+        uploaded = WorkspacePolicy(workspace_id=workspace_id, revision=revision,
+                                   digest=policy.digest, source=payload.policy)
+        session.add(uploaded)
+        try:
+            await session.commit()
+        except IntegrityError:
+            await session.rollback()
+            if attempt == 2:
+                raise
+        else:
+            return uploaded
+
+
+@router.get("/policy", response_model=WorkspacePolicyOut)
+async def get_policy(session: SessionDep, workspace: WorkspaceDep):
+    policy = await current_workspace_policy(session, workspace.id)
+    if policy is None:
+        raise HTTPException(status_code=404, detail="No workspace policy has been uploaded.")
+    return policy
+
+
+@router.post("/policy/decisions", response_model=PolicyDecisionsStored)
+async def post_policy_decisions(
+    payload: PolicyDecisionsIn, session: SessionDep, workspace: WorkspaceDep,
+):
+    if not payload.decisions:
+        return PolicyDecisionsStored(stored=0, duplicates=0)
+
+    workspace_id = workspace.id
+    dialect = session.get_bind().dialect.name
+    if dialect == "sqlite":
+        await session.flush()
+
+    digests = {item.policy_digest for item in payload.decisions if item.policy_digest}
+    revisions = dict((await session.execute(
+        select(WorkspacePolicy.digest, func.max(WorkspacePolicy.revision))
+        .where(WorkspacePolicy.workspace_id == workspace_id, WorkspacePolicy.digest.in_(digests))
+        .group_by(WorkspacePolicy.digest)
+    )).all())
+    rows = []
+    # Acquire conflicting keys in the same order across batches.
+    for item in sorted(payload.decisions, key=lambda item: item.decision_id):
+        rows.append({
+            "workspace_id": workspace_id,
+            "source": "sdk",
+            "decision_key": str(item.decision_id),
+            "tool": item.tool,
+            "tool_call_id": policy_tool_call_id(item.tool_call_id) if item.tool_call_id else None,
+            "allowed": item.allowed,
+            "reason": item.reason,
+            "caller_subject": item.caller_subject,
+            "policy_version": item.policy_version,
+            "policy_digest": item.policy_digest,
+            "policy_revision": revisions.get(item.policy_digest),
+            "decided_at": item.decided_at,
+        })
+    insert = pg_insert if dialect == "postgresql" else sqlite_insert
+    statement = insert(PolicyDecision).values(rows).on_conflict_do_nothing(
+        index_elements=["workspace_id", "decision_key"],
+    ).returning(PolicyDecision.id)
+    stored = len((await session.scalars(statement)).all())
+    await session.commit()
+    return PolicyDecisionsStored(stored=stored, duplicates=len(rows) - stored)
 
 
 @router.get("/policy/decisions", response_model=list[PolicyDecisionOut])

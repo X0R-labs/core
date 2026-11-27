@@ -6,6 +6,7 @@ from time import sleep
 from sqlalchemy import inspect, text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.schema import CreateIndex
 
 from .config import get_settings
 from .models import Base
@@ -37,10 +38,14 @@ async def get_session() -> AsyncIterator[AsyncSession]:
 # Nullable columns added after a table first shipped. ``create_all`` never alters an
 # existing table, so these are added in place on startup.
 _ADDED_COLUMNS = {
-    "policy_decisions": ("tool_call_id", "caller_subject"),
+    "policy_decisions": (
+        "tool_call_id", "caller_subject", "policy_digest", "policy_revision",
+        "source", "decision_key", "decided_at",
+    ),
 }
 _ADDED_INDEXES = {
-    "ix_policy_decisions_tool_call_id": ("policy_decisions", "tool_call_id"),
+    "ix_policy_decisions_tool_call_id": "policy_decisions",
+    "ix_policy_decisions_workspace_decision_key": "policy_decisions",
 }
 _SCHEMA_LOCK_KEY = 0x583052434F5245
 
@@ -86,9 +91,13 @@ def _add_missing_columns(sync_conn) -> None:
                     name in {c["name"] for c in inspect(sync_conn).get_columns(table_name)}
                 ),
             )
-    for index_name, (table_name, column) in _ADDED_INDEXES.items():
+    for index_name, table_name in _ADDED_INDEXES.items():
         if inspector.has_table(table_name):
-            statement = f"CREATE INDEX IF NOT EXISTS {index_name} ON {table_name} ({column})"
+            table = Base.metadata.tables[table_name]
+            index = next(index for index in table.indexes if index.name == index_name)
+            statement = str(CreateIndex(index, if_not_exists=True).compile(
+                dialect=sync_conn.dialect,
+            ))
             if postgres:
                 sync_conn.execute(text(statement))
             else:

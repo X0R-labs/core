@@ -76,7 +76,7 @@ Policy(
 ```
 
 - **`on_decision`** gets a `DecisionRecord`: tool, tool-call ID, allowed, reason, caller
-  subject, policy version and time. It never holds argument values. When you set it, it
+  subject, policy version, time, and a UUID. It never holds argument values. When you set it, it
   is called for every decision before the reply is returned. If it raises, the reply is
   withheld (`DecisionNotRecorded`). It must be a plain function: an `async` one is
   rejected, because the reply would go out before the record was saved. Leave it unset
@@ -114,6 +114,32 @@ as `policy.policy_digest` and is included in each decision record. Policies buil
 directly in Python default to `None` for that field.
 
 See the [example policy](../examples/policy.toml).
+
+## Send decisions to Core with `core_sink`
+
+Set `on_decision` to a Core sink and use the API key for the workspace that should
+receive the decisions.
+
+```python
+import os
+
+from x0r_guard import Policy, core_sink
+
+policy = Policy.from_file(
+    "examples/policy.toml",
+    on_decision=core_sink(os.environ["X0R_CORE_URL"], os.environ["X0R_KEY"]),
+)
+```
+
+Pass this policy to `wrap()`. The sink posts each decision before the wrapper releases
+the reply. It uses a five-second timeout and retries network errors and HTTP 5xx
+responses twice by default. Retries reuse the same decision ID, so Core stores the
+decision once. An HTTP 4xx response or an exhausted retry raises an error and the
+wrapper withholds the reply with `DecisionNotRecorded`.
+
+Use HTTPS for remote Core instances. HTTP is accepted for `localhost`, `127.0.0.1`
+and `::1`. The workspace log at `GET /v1/policy/decisions` shows SDK records with
+`source="sdk"` and the latest matching uploaded revision if Core knows the digest.
 
 ## What it guards, and what it refuses
 
