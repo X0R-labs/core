@@ -7,7 +7,9 @@ import sys
 from dataclasses import dataclass, field
 from typing import Any
 
-from x0r_core.guard import ActionRequest, Decision, check_action
+import pytest
+
+from x0r_core.guard import ActionRequest, Caller, Decision, HookContext, check_action
 
 
 @dataclass
@@ -76,17 +78,47 @@ def test_schema_limits_apply():
     assert _check(_request(arguments=extra)).reason == "unexpected_arguments"
 
 
-def test_hook_gets_the_callers_context():
-    seen: list[Any] = []
+def test_hook_gets_caller_call_id_and_config():
+    seen: list[HookContext] = []
 
-    def only_small(arguments: dict[str, Any], context: Any) -> str | None:
-        seen.append(context)
-        return "over_limit" if arguments["amount"] > context["max"] else None
+    def only_small(arguments: dict[str, Any], hook: HookContext) -> str | None:
+        seen.append(hook)
+        return "over_limit" if arguments["amount"] > hook.config["max"] else None
 
     tool = Spec(name="refund", parameters=REFUND.parameters, authorize=only_small)
-    ctx = {"max": 5}
-    assert _check(_request(), tools={"refund": tool}, context=ctx).reason == "over_limit"
-    assert seen == [ctx]
+    caller = Caller(subject="user-1", attributes={"role": "agent"})
+    request = _request(caller=caller, tool_call_id="call_9")
+    config = {"max": 5}
+    assert _check(request, tools={"refund": tool}, config=config).reason == "over_limit"
+    assert seen == [HookContext(caller=caller, tool_call_id="call_9", config=config)]
+
+
+def test_context_is_a_keyword_alias_for_config():
+    config = object()
+
+    def authorize(arguments, hook):
+        return None if hook.config is config else "wrong_config"
+
+    tool = Spec(name="refund", parameters=REFUND.parameters, authorize=authorize)
+    assert _check(_request(), tools={"refund": tool}, context=config).allowed
+    with pytest.raises(TypeError, match="config or context"):
+        _check(_request(), config=None, context=None)
+
+
+def test_own_record_rule():
+    # The CRM case: a caller may only touch their own customer record.
+    def own_record(arguments: dict[str, Any], hook: HookContext) -> str | None:
+        if hook.caller is None or arguments["order_id"] != hook.caller.subject:
+            return "not_callers_record"
+        return None
+
+    tool = Spec(name="refund", parameters=REFUND.parameters, authorize=own_record)
+    tools = {"refund": tool}
+    mine = _request(caller=Caller(subject="A1"))
+    theirs = _request(caller=Caller(subject="B2"))
+    assert _check(mine, tools=tools).allowed
+    assert _check(theirs, tools=tools).reason == "not_callers_record"
+    assert _check(_request(), tools=tools).reason == "not_callers_record"
 
 
 def test_a_failing_hook_denies():

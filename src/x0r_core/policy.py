@@ -4,6 +4,7 @@ This is an operator-controlled policy gate, not end-user RBAC.
 """
 from __future__ import annotations
 
+from hashlib import sha256
 from typing import TYPE_CHECKING
 
 from .config import Settings
@@ -11,6 +12,7 @@ from .guard import (
     MAX_STRING_LENGTH,
     POLICY_VERSION,
     ActionRequest,
+    Caller,
     Decision,
     check_action,
     check_arguments,
@@ -29,6 +31,12 @@ __all__ = [
 ]
 
 
+def policy_tool_call_id(call_id: str) -> str:
+    if len(call_id) <= 200:
+        return call_id
+    return "sha256:" + sha256(call_id.encode("utf-8")).hexdigest()
+
+
 def operator_tools(settings: Settings) -> set[str]:
     return {t.strip() for t in settings.operator_tool_allowlist.split(",") if t.strip()}
 
@@ -37,6 +45,7 @@ def authorize_tool(
     *, workspace_id: str, agent_workspace_id: str, agent_tools: list[str],
     tool_name: str, arguments: object, settings: Settings,
     registry: dict[str, Tool] | None = None,
+    caller: Caller | None = None, tool_call_id: str | None = None,
 ) -> Decision:
     if registry is None:
         from .tools.builtin import REGISTRY as registry
@@ -46,7 +55,9 @@ def authorize_tool(
         agent_tools=agent_tools,
         tool_name=tool_name,
         arguments=arguments,
+        caller=caller,
+        tool_call_id=tool_call_id,
     )
     return check_action(
-        request, operator_tools=operator_tools(settings), tools=registry, context=settings,
+        request, operator_tools=operator_tools(settings), tools=registry, config=settings,
     )

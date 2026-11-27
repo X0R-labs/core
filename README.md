@@ -47,6 +47,56 @@ infrastructure and pointed at any OpenAI-compatible model endpoint.
 | "Can we self-host it?" | FastAPI + SQLAlchemy. SQLite for a demo, Postgres support (validate your deployment) |
 | "Are we locked to OpenAI?" | Any OpenAI-compatible base URL: OpenAI, OpenRouter, Groq, vLLM, Ollama |
 
+## How it works, in a nutshell
+
+Your app calls Core with an API key. Core finds the workspace, does the work, and checks
+every tool an agent wants to use **before** it runs.
+
+```mermaid
+flowchart LR
+  App["Your app"] -->|"API key"| API["API<br/>routes + key check"]
+  API --> SVC["Services<br/>ingest · search · agents · evals · usage"]
+  SVC -->|"ask the model"| PROV["Providers<br/>mock · any OpenAI-style API"]
+  SVC -->|"may I use this tool?"| GUARD["Guard<br/>7 checks"]
+  GUARD -->|"allowed, recorded"| TOOLS["Tools<br/>knowledge_search · calculator · http_get"]
+  SVC --> DB[("SQLite / Postgres")]
+  GUARD -.->|"decision saved first"| DB
+```
+
+One agent run:
+
+```mermaid
+sequenceDiagram
+  participant App
+  participant Core as Agent loop
+  participant Model
+  participant Guard
+  participant Tool
+  App->>Core: input (+ optional caller)
+  loop until an answer or a limit
+    Core->>Model: conversation + tool list
+    Model-->>Core: answer, or "call tool X"
+    Core->>Guard: may it?
+    Guard-->>Core: allowed / denied + reason (saved)
+    Core->>Tool: run it (only if allowed)
+    Tool-->>Core: result back to the model
+  end
+  Core-->>App: status, answer, full transcript
+```
+
+- **Workspace isolation:** every row and every query is scoped to the API key's workspace.
+- **The guard** (`x0r_core.guard`, standard library only) runs seven checks in order:
+  workspace, agent grant, operator grant, argument shape, known tool, argument schema, and
+  the tool's own rule (which can see the caller). The first "no" stops the run as
+  `blocked`.
+- **Evidence:** each decision is saved before the tool runs, with its reason, tool-call id
+  and caller. Read it at `GET /v1/policy/decisions`.
+- **Metering:** every run and every ingest adds token usage, and a monthly quota stops new
+  runs.
+
+The full tour, with every component, table, limit and weak spot, is in
+[docs/INTERNALS.md](docs/INTERNALS.md).
+
 ## What's in the box
 
 - **Workspaces & API keys** — `x0r_<prefix>_<secret>`, hashed at rest, revocable.
@@ -59,7 +109,7 @@ infrastructure and pointed at any OpenAI-compatible model endpoint.
   Add your own ([example](examples/custom_tool.py)): every call is checked against the
   tool's declared argument schema and the operator allowlist before it runs.
 - **Policy decision log** — every tool authorization, allowed or denied, with its reason,
-  at `GET /v1/policy/decisions`.
+  caller and tool-call id, saved before the tool runs, at `GET /v1/policy/decisions`.
 - **Runs** — full transcript persisted: every model call, every tool call, every result.
 - **Metering** — monthly token quota per workspace, enforced with `429`, plus a usage
   breakdown by kind.

@@ -51,7 +51,7 @@ inspect exactly what happened.
 | `agents` | Prompt, model, tool allowlist, temperature, step limit |
 | `runs` | Input, output, step transcript, tokens, latency, error |
 | `usage_events` | Append-only meter (`llm_tokens`, `embedding_tokens`) |
-| `policy_decisions` | Append-only tool authorization log: tool, allowed, reason, policy version (no arguments) |
+| `policy_decisions` | Append-only tool authorization log: tool, tool-call id, caller subject, allowed, reason, policy version (no arguments). Committed before the tool runs |
 | `eval_suites` / `eval_cases` | Golden questions, last output, score, pass |
 
 ## Retrieval

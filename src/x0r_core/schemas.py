@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Annotated, Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ORMModel(BaseModel):
@@ -105,8 +105,28 @@ class AgentOut(ORMModel):
     created_at: datetime
 
 
+class CallerIn(BaseModel):
+    """Who the run acts for, as asserted by the app holding the API key."""
+
+    subject: str = Field(min_length=1, max_length=200, pattern=r"\S")
+    attributes: dict[
+        Annotated[str, Field(min_length=1, max_length=64)],
+        Annotated[str, Field(max_length=200)],
+    ] = Field(
+        default_factory=dict, max_length=20
+    )
+
+    @model_validator(mode="after")
+    def _no_control_characters(self) -> CallerIn:
+        values = [self.subject, *self.attributes, *self.attributes.values()]
+        if any(ord(ch) < 32 or ord(ch) == 127 for value in values for ch in value):
+            raise ValueError("caller fields must not contain control characters")
+        return self
+
+
 class RunIn(BaseModel):
     input: str = Field(min_length=1, max_length=32_000)
+    caller: CallerIn | None = None
 
 
 class RunOut(ORMModel):
@@ -128,6 +148,8 @@ class PolicyDecisionOut(ORMModel):
     run_id: str | None
     agent_id: str | None
     tool: str
+    tool_call_id: str | None
+    caller_subject: str | None
     allowed: bool
     reason: str
     policy_version: str

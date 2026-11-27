@@ -56,7 +56,7 @@ curl -s localhost:8000/v1/documents \
 | `GET` | `/v1/agents` | List. |
 | `GET` | `/v1/agents/{id}` | Fetch. |
 | `DELETE` | `/v1/agents/{id}` | Delete. |
-| `POST` | `/v1/agents/{id}/run` | `{ "input": "..." }` → run with transcript. |
+| `POST` | `/v1/agents/{id}/run` | `{ "input": "...", "caller": { "subject": "user-42", "attributes": { "role": "support" } } }` → run with transcript. `caller` is optional: who the run acts for, as asserted by the app holding the API key (subject 1–200 chars, up to 20 attributes of ≤200 chars). Tool rules see it; the decision log stores the subject. |
 
 Built-in tools: `knowledge_search`, `calculator`, `http_get` (operator-allowlisted).
 
@@ -92,11 +92,20 @@ A run returns:
 
 ## Runs
 
+If a policy decision cannot be saved during an agent or eval run, the response is `503`
+with `detail.message` and `detail.run_id`. Core skips the tool for that decision. Earlier
+tools in the run may already have run. Check `GET /v1/runs/{run_id}` for saved progress.
+If the first decision commit fails, nothing was saved and `run_id` is `null`.
+
 | Method | Path | Notes |
 | --- | --- | --- |
 | `GET` | `/v1/runs` | `?limit=` 1–200, newest first. |
 | `GET` | `/v1/runs/{id}` | Full transcript. |
-| `GET` | `/v1/policy/decisions` | Tool authorization log, newest first. `?limit=` 1–200, `?allowed=true\|false`, `?run_id=`. No argument values. |
+| `GET` | `/v1/policy/decisions` | Tool authorization log, newest first. `?limit=` 1–200, `?allowed=true\|false`, `?run_id=`, `?tool_call_id=`. Each row has `tool_call_id` and `caller_subject`. No argument values. |
+
+The `tool_call_id` filter accepts original IDs up to 4096 characters. For IDs over
+200 characters, the log stores `sha256:` plus the hex digest of the full ID. The run
+transcript keeps the original ID.
 
 ## Evals
 

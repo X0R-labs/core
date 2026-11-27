@@ -20,15 +20,44 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable, Collection, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 POLICY_VERSION = "2"
 MAX_STRING_LENGTH = 8000
 
-# A tool-specific check run after the generic ones. It gets the arguments and whatever
-# context the caller passes (Core passes its Settings). Returns a denial reason, or None.
-Authorizer = Callable[[dict[str, Any], Any], "str | None"]
+
+
+@dataclass(frozen=True)
+class Caller:
+    """Who the action is for, as asserted by the authenticated app (e.g. its end user)."""
+
+    subject: str
+    attributes: Mapping[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class HookContext:
+    """What a tool's ``authorize`` hook gets besides the arguments.
+
+    ``caller`` and ``tool_call_id`` come from the request, so a rule written once works in
+    every connector. ``config`` is whatever the connector passes (Core passes its Settings).
+    """
+
+    caller: Caller | None
+    tool_call_id: str | None
+    config: Any
+
+    def __getattr__(self, name: str) -> Any:
+        # Hooks written before HookContext received the config object itself (Core's
+        # Settings). Unknown attributes fall through to it so those hooks keep working.
+        if name.startswith("__") or name == "config":
+            raise AttributeError(name)
+        return getattr(self.config, name)
+
+
+# A tool-specific check run after the generic ones. Returns a denial reason, or None.
+Authorizer = Callable[[dict[str, Any], HookContext], "str | None"]
 
 
 class ToolPolicy(Protocol):
@@ -52,6 +81,8 @@ class ActionRequest:
     agent_tools: Collection[str]
     tool_name: str
     arguments: object
+    caller: Caller | None = None
+    tool_call_id: str | None = None
 
 
 def _valid_value(value: Any, spec: dict[str, Any], *, required: bool) -> bool:
@@ -103,14 +134,24 @@ def _is_text(value: object) -> bool:
     return isinstance(value, (str, bytes, bytearray))
 
 
+_UNSET = object()
+
+
 def check_action(
     request: ActionRequest,
     *,
     operator_tools: Collection[str],
     tools: Mapping[str, ToolPolicy],
-    context: Any = None,
+    config: Any = _UNSET,
+    context: Any = _UNSET,
 ) -> Decision:
-    """Decide one action. ``context`` is passed unchanged to the tool's ``authorize`` hook."""
+    """Decide one action. The hook receives ``config`` or its legacy alias ``context``."""
+    if context is not _UNSET:
+        if config is not _UNSET:
+            raise TypeError("check_action() accepts either config or context, not both")
+        config = context
+    elif config is _UNSET:
+        config = None
     if request.workspace_id != request.agent_workspace_id:
         return Decision(False, "workspace_mismatch")
     # A plain string is a Collection too, and "in" would match substrings: deny it.
@@ -130,7 +171,10 @@ def check_action(
         return Decision(False, reason)
     if tool.authorize is not None:
         try:
-            reason = tool.authorize(arguments, context)
+            hook = HookContext(
+                caller=request.caller, tool_call_id=request.tool_call_id, config=config,
+            )
+            reason = tool.authorize(arguments, hook)
         except Exception:  # noqa: BLE001 - a failing hook denies, never allows
             reason = "authorizer_error"
         if reason is not None:

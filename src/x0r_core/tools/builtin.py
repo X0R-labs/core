@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 
 import httpx
 
+from ..guard import HookContext
 from .base import Tool, ToolContext
 
 # ── knowledge_search ─────────────────────────────────────────────────────────
@@ -207,8 +208,9 @@ async def http_get(ctx: ToolContext, url: str) -> dict:
 
 
 
-def authorize_http_get(arguments: dict, settings) -> str | None:
+def authorize_http_get(arguments: dict, hook: HookContext) -> str | None:
     """Deny destinations outside the operator's host allowlist before any request."""
+    settings = hook.config
     try:
         url = urlparse(arguments["url"])
         if (
