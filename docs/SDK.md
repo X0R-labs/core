@@ -88,6 +88,33 @@ Policy(
 - The policy is frozen when you make it: changing the list you passed as `allow` later
   changes nothing. `config` is passed as is, so don't change it while requests run.
 
+## Policy files
+
+Load a version 1 TOML policy with the SDK.
+
+```python
+policy = Policy.from_file("examples/policy.toml", on_decision=save_decision)
+```
+
+Set `version = 1`, list permitted tools in `allow`, and add rules under
+`[rules.<tool>]` as needed. All rules for a tool must pass. The guard reports the
+first failing rule in file order.
+
+| Rule | Fields | When it passes |
+| --- | --- | --- |
+| `caller_owns` | `argument`, `attribute` | The argument matches the caller attribute string or an exact member of its tuple |
+| `max` / `min` | `argument`, `value` | The numeric argument is within the inclusive bound |
+| `one_of` | `argument`, `values` | The argument equals one of the listed strings, booleans or finite numbers |
+| `caller_has` | `attribute`, `value` | The caller attribute equals the given string |
+| `deny` | `reason` | Always denies with the supplied reason |
+
+Invalid files raise `PolicyFileError` during loading. Pass `rules=` to add Python
+rules for tools without file rules. The SHA-256 of the exact file bytes is available
+as `policy.policy_digest` and is included in each decision record. Policies built
+directly in Python default to `None` for that field.
+
+See the [example policy](../examples/policy.toml).
+
 ## What it guards, and what it refuses
 
 | Path | Behavior |

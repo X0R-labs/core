@@ -22,6 +22,7 @@ from .identity import (
     token_key_id,
     verify_caller,
 )
+from .policy_file import PolicyFile, PolicyFileError, load_policy_file, load_policy_text
 from .sdk import (
     DecisionNotRecorded,
     DecisionRecord,
@@ -50,6 +51,10 @@ __all__ = [
     "token_key_id",
     "sign_caller",
     "verify_caller",
+    "PolicyFile",
+    "PolicyFileError",
+    "load_policy_file",
+    "load_policy_text",
     "DecisionNotRecorded",
     "DecisionRecord",
     "GuardError",

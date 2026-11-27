@@ -1,0 +1,9 @@
+version = 1
+allow = ["lookup_order", "refund_order"]
+
+[rules.refund_order]
+caller_owns = { argument = "order_id", attribute = "orders" }
+max = { argument = "amount", value = 50 }
+
+[rules.lookup_order]
+caller_owns = { argument = "order_id", attribute = "orders" }
