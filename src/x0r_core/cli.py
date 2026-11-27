@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+from functools import partial
+from pathlib import Path
 
 import typer
 
@@ -16,6 +19,58 @@ app = typer.Typer(
     help="X0R Core — self-hosted AI agent backend.",
     no_args_is_help=True,
 )
+
+
+@app.command("mcp-proxy")
+def mcp_proxy(
+    policy: Path = typer.Option(..., "--policy"),
+    caller_token_file: Path | None = typer.Option(None, "--caller-token-file"),
+    audience: str = typer.Option("mcp", "--audience"),
+    core_url: str | None = typer.Option(None, "--core-url"),
+    decision_log: Path | None = typer.Option(None, "--decision-log"),
+    block_resources: bool = typer.Option(False, "--block-resources"),
+    block_prompts: bool = typer.Option(False, "--block-prompts"),
+    check: bool = typer.Option(False, "--check"),
+    command: list[str] = typer.Argument(..., metavar="SERVER_COMMAND..."),
+) -> None:
+    """Guard a stdio MCP server. Put its command and arguments after --."""
+    from x0r_guard.policy_file import load_policy_file
+    from x0r_guard.sink import core_sink
+
+    from .connectors.mcp import Proxy, append_decision, caller_key, check_server, read_caller
+
+    try:
+        file = load_policy_file(policy)
+        sinks = []
+        get_caller = None
+        if not check:
+            if decision_log is not None:
+                sinks.append(partial(append_decision, decision_log))
+            if core_url is not None:
+                api_key = os.environ.get("X0R_API_KEY")
+                if not api_key:
+                    raise ValueError("--core-url requires X0R_API_KEY")
+                sinks.append(core_sink(core_url, api_key, source="mcp"))
+            if not sinks:
+                raise ValueError("provide --decision-log, --core-url, or both")
+            if caller_token_file is not None:
+                key = caller_key(os.environ.get("X0R_CALLER_KEY", ""))
+                get_caller = partial(read_caller, caller_token_file, key, audience)
+    except ValueError as exc:
+        typer.echo(f"mcp-proxy: {exc}", err=True)
+        raise typer.Exit(2) from exc
+
+    try:
+        if check:
+            status = asyncio.run(check_server(command, file))
+        else:
+            proxy = Proxy(file, sinks, get_caller=get_caller, block_resources=block_resources,
+                          block_prompts=block_prompts)
+            status = asyncio.run(proxy.run(command))
+    except (OSError, ValueError) as exc:
+        typer.echo(f"mcp-proxy: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    raise typer.Exit(status if status >= 0 else 128 - status)
 
 
 @app.command("security-demo")

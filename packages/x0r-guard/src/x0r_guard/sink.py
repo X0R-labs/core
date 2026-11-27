@@ -18,7 +18,7 @@ class _NoRedirect(HTTPRedirectHandler):
 
 
 def core_sink(
-    url: str, api_key: str, *, timeout: float = 5.0, retries: int = 2,
+    url: str, api_key: str, *, timeout: float = 5.0, retries: int = 2, source: str = "sdk",
 ) -> Callable[[DecisionRecord], None]:
     """Return an on_decision hook that posts each record and retries transient errors."""
     parsed = urlsplit(url)
@@ -34,7 +34,7 @@ def core_sink(
     opener = build_opener(_NoRedirect())
 
     def send(record: DecisionRecord) -> None:
-        body = json.dumps({"decisions": [asdict(record)]}).encode("utf-8")
+        body = json.dumps({"decisions": [{**asdict(record), "source": source}]}).encode("utf-8")
         request = Request(endpoint, data=body, headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
