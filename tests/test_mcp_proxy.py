@@ -7,17 +7,21 @@ import hashlib
 import json
 import os
 import signal
+import socket
 import subprocess
 import sys
 import time
-from contextlib import contextmanager, nullcontext
+from contextlib import asynccontextmanager, contextmanager, nullcontext
 from dataclasses import replace
+from http.client import HTTPConnection
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
-from threading import Event
+from threading import Event, Thread
 from types import SimpleNamespace
 from unittest.mock import Mock
 from uuid import uuid4
 
+import httpx
 import pytest
 from typer.testing import CliRunner
 from x0r_guard import sink
@@ -426,3 +430,410 @@ def test_core_sink_source_and_proxy_wiring(setup_proxy, monkeypatch):
                                      "--", "server"])
     assert result.exit_code == 0, result.exception
     assert [row["source"] for row in records] == ["sdk", "mcp"]
+
+
+@pytest.fixture
+def http_server(monkeypatch):
+    calls = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            message = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            calls.append((message, dict(self.headers.items())))
+            method = message["method"]
+            if "id" not in message:
+                self.send_response(202)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            if method == "initialize":
+                result = {"protocolVersion": "2025-03-26", "capabilities": {"tools": {}}}
+            elif method == "tools/list":
+                result = {"tools": [refund_entry(), {"name": "hidden", "inputSchema": {}}]}
+            else:
+                result = {"content": [{"type": "text", "text": "refunded"}]}
+            response = {"jsonrpc": "2.0", "id": message["id"], "result": result}
+            self.send_response(200)
+            if method == "initialize":
+                self.send_header("Mcp-Session-Id", "session-123")
+            if method == "tools/call":
+                self.send_header("Content-Type", "text/event-stream")
+                progress = json.dumps({"jsonrpc": "2.0", "method": "notifications/progress"})
+                body = f": comment\r\ndata: {progress}\r\n\r\n"
+                body += f"event: message\r\ndata: {json.dumps(response)}\r\n\r\n"
+            else:
+                self.send_header("Content-Type", "application/json")
+                body = json.dumps(response)
+            payload = body.encode()
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *args):
+            pass
+
+    def handle(request):
+        # Exercise the HTTP handler even in environments that disallow listening sockets.
+        client_socket, server_socket = socket.socketpair()
+        with client_socket, server_socket:
+            client_socket.settimeout(5)
+            thread = Thread(target=Handler, args=(server_socket, ("127.0.0.1", 0), None))
+            thread.start()
+            connection = HTTPConnection("127.0.0.1")
+            connection.sock = client_socket
+            try:
+                headers = {key.decode(): value.decode() for key, value in request.headers.raw}
+                connection.request(request.method, request.url.raw_path.decode(),
+                                   body=request.content, headers=headers)
+                response = connection.getresponse()
+                return httpx.Response(response.status, headers=response.getheaders(),
+                                      content=response.read())
+            finally:
+                connection.close()
+                thread.join(timeout=5)
+
+    async def send(request):
+        return await asyncio.to_thread(handle, request)
+
+    client_factory = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: client_factory(
+        transport=httpx.MockTransport(send), **kwargs,
+    ))
+    return "http://127.0.0.1/mcp", calls
+
+
+async def test_http_proxy(proxy, http_server, monkeypatch):
+    url, calls = http_server
+    incoming = asyncio.Queue()
+    outgoing = asyncio.Queue()
+
+    @asynccontextmanager
+    async def read_client():
+        yield incoming.get
+
+    monkeypatch.setattr(mcp, "client_reader", read_client)
+    monkeypatch.setattr(mcp, "write_client", outgoing.put_nowait)
+    records = []
+    proxy.sinks.append(records.append)
+
+    def send(**message):
+        incoming.put_nowait(mcp.encode({"jsonrpc": "2.0", **message}))
+
+    async def receive():
+        return await asyncio.wait_for(outgoing.get(), 5)
+
+    task = asyncio.create_task(proxy.run_http(mcp.HttpUpstream(url, "test-token")))
+    try:
+        send(method="initialize", id=1, params={"protocolVersion": "2025-03-26"})
+        assert (await receive())["id"] == 1
+        send(method="notifications/initialized")
+        send(method="notifications/tools/list_changed")
+        send(method="unknown/method", id=2)
+        assert (await receive())["error"]["code"] == -32601
+        send(method="tools/list", id=3)
+        assert (await receive())["result"]["tools"] == [refund_entry()]
+        send(method="tools/call", id=4, params={"name": "refund", "arguments": {"amount": 51}})
+        assert (await receive())["result"] == denied("rule_max")
+        params = {"name": "refund", "arguments": {"amount": 1},
+                  "_meta": {"idempotencyKey": "http-refund"}}
+        send(method="tools/call", id=5, params=params)
+        assert (await receive())["method"] == "notifications/progress"
+        first = await receive()
+        assert first["result"]["content"][0]["text"] == "refunded"
+        send(method="tools/call", id=6, params=params)
+        assert await receive() == dict(first, id=6)
+        incoming.put_nowait(b"")
+        assert await asyncio.wait_for(task, 5) == 0
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    assert [message["method"] for message, _ in calls] == [
+        "initialize", "notifications/initialized", "tools/list", "tools/call",
+    ]
+    assert "Mcp-Session-Id" not in calls[0][1]
+    for _, headers in calls[1:]:
+        assert headers["Mcp-Session-Id"] == "session-123"
+        assert headers["MCP-Protocol-Version"] == "2025-03-26"
+    for _, headers in calls:
+        assert headers["Accept"] == "application/json, text/event-stream"
+        assert headers["Authorization"] == "Bearer test-token"
+    assert [record.reason for record in records] == [
+        "rule_max", "granted", "idempotency_replayed",
+    ]
+
+
+def test_check_http(setup_proxy, http_server, monkeypatch):
+    policy, _, _ = setup_proxy
+    url, calls = http_server
+    monkeypatch.setenv("MCP_TOKEN", "test-token")
+    result = CliRunner().invoke(app, [
+        "mcp-proxy", "--policy", str(policy), "--upstream", url, "--check",
+        "--upstream-token-env", "MCP_TOKEN",
+    ])
+    assert result.exit_code == 0, result.exception
+    assert result.stdout.splitlines() == [
+        "refund: allowed, schema checkable", "hidden: not-in-policy, schema checkable",
+    ]
+    assert [message["method"] for message, _ in calls] == [
+        "initialize", "notifications/initialized", "tools/list",
+    ]
+    assert all(headers["Authorization"] == "Bearer test-token" for _, headers in calls)
+
+
+def test_insecure_nonlocal_http_is_refused(setup_proxy):
+    policy, _, _ = setup_proxy
+    result = CliRunner().invoke(app, [
+        "mcp-proxy", "--check", "--policy", str(policy), "--upstream", "http://example.org/mcp",
+    ])
+    assert result.exit_code == 2
+    assert "requires HTTPS except on localhost" in result.output
+
+
+def test_idempotent_retry_hits_stdio_server_once(setup_proxy):
+    policy, calls, log = setup_proxy
+    meta = {"idempotencyKey": "refund-1"}
+    with client(policy, calls, "--decision-log", str(log)) as cli:
+        cli.request("tools/list")
+        first = cli.request("tools/call", name="refund", arguments={"amount": 1}, _meta=meta)
+        second = cli.request("tools/call", name="refund", arguments={"amount": 1}, _meta=meta)
+        assert first["id"] != second["id"]
+        assert first["result"] == second["result"]
+        for amount in (2, 51):
+            reply = cli.request(
+                "tools/call", name="refund", arguments={"amount": amount}, _meta=meta,
+            )
+            assert reply["result"] == denied("idempotency_key_reused")
+    assert len(rows(calls)) == 1
+    assert [r["reason"] for r in rows(log)] == [
+        "granted", "idempotency_replayed", "idempotency_key_reused", "idempotency_key_reused",
+    ]
+
+
+async def test_idempotency_in_flight_and_expiry(proxy, monkeypatch):
+    await list_tools(proxy, refund_entry())
+    now = 100
+    monkeypatch.setattr(mcp, "monotonic", lambda: now)
+    first = {"id": 2, "method": "tools/call", "params": {
+        "name": "refund", "arguments": {"amount": 1}, "_meta": {"idempotencyKey": "refund-1"},
+    }}
+    assert await proxy.accept_client(first)
+    assert not await proxy.accept_client(dict(first, id=3))
+    assert mcp.write_client.call_args.args[0]["result"] == denied("idempotency_in_progress")
+    proxy.accept_server({"id": 2, "result": {"cached": True}})
+    now += 599
+    assert not await proxy.accept_client(dict(first, id=4))
+    assert mcp.write_client.call_args.args[0]["result"] == {"cached": True}
+    tool = proxy.tools["refund"]
+    proxy.tools["refund"] = replace(tool, authorize=lambda *_: "refunds_closed")
+    assert not await proxy.accept_client(dict(first, id=5))
+    assert mcp.write_client.call_args.args[0]["result"] == denied("refunds_closed")
+    proxy.tools["refund"] = tool
+    now += 1
+    assert await proxy.accept_client(dict(first, id=6))
+
+
+def keyed_call(request_id, key="refund-key"):
+    return {"jsonrpc": "2.0", "method": "tools/call", "id": request_id, "params": {
+        "name": "refund", "arguments": {"amount": 1}, "_meta": {"idempotencyKey": key},
+    }}
+
+
+@pytest.mark.parametrize("key", [None, False, 1, [], "", "k" * 201])
+async def test_invalid_idempotency_key_is_recorded(proxy, key):
+    records = []
+    proxy.sinks.append(records.append)
+    await list_tools(proxy, refund_entry())
+    assert not await proxy.accept_client(keyed_call(2, key))
+    assert mcp.write_client.call_args.args[0]["result"] == denied("invalid_idempotency_key")
+    assert [record.reason for record in records] == ["invalid_idempotency_key"]
+
+
+@pytest.mark.parametrize("body", [{}, {"result": {}, "error": {}}])
+async def test_ambiguous_reply_marks_outcome_unknown(proxy, body):
+    await list_tools(proxy, refund_entry())
+    assert await proxy.accept_client(keyed_call(2))
+    proxy.accept_server({"id": 2, **body})
+    proxy.accept_server({"method": "notifications/tools/list_changed"})
+    assert not await proxy.accept_client(keyed_call(3))
+    assert mcp.write_client.call_args.args[0]["result"] == denied("idempotency_outcome_unknown")
+
+
+async def test_stdio_exit_marks_outcome_unknown(proxy, setup_proxy, monkeypatch):
+    _, calls, _ = setup_proxy
+    incoming = asyncio.Queue()
+    incoming.put_nowait(mcp.encode({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}))
+
+    def deliver(message):
+        if message["id"] == 1:
+            incoming.put_nowait(mcp.encode(keyed_call(2)))
+
+    @asynccontextmanager
+    async def read_client():
+        yield incoming.get
+
+    monkeypatch.setattr(mcp, "client_reader", read_client)
+    mcp.write_client.side_effect = deliver
+    assert await asyncio.wait_for(
+        proxy.run([sys.executable, str(SERVER), str(calls), "--exit-after-call"]), 5,
+    ) == 1
+    assert len(rows(calls)) == 1
+    assert not await proxy.accept_client(keyed_call(3))
+    assert mcp.write_client.call_args.args[0]["result"] == denied("idempotency_outcome_unknown")
+
+
+async def test_replay_fingerprint_normalizes_nested_numbers(proxy):
+    entry = refund_entry()
+    entry["inputSchema"]["properties"]["items"] = {
+        "type": "array", "items": {"type": "object", "properties": {"value": {"type": "number"}}},
+    }
+    await list_tools(proxy, entry)
+    first = keyed_call(2)
+    first["params"]["arguments"]["items"] = [{"value": 1}]
+    assert await proxy.accept_client(first)
+    proxy.accept_server({"id": 2, "result": {"cached": True}})
+    retry = keyed_call(3)
+    retry["params"]["arguments"]["items"] = [{"value": 1.0}]
+    assert not await proxy.accept_client(retry)
+    assert mcp.write_client.call_args.args[0]["result"] == {"cached": True}
+    retry["params"]["arguments"]["items"] = [{"value": True}]
+    assert not await proxy.accept_client(retry)
+    assert mcp.write_client.call_args.args[0]["result"] == denied("idempotency_key_reused")
+
+
+async def test_replay_body_limits(proxy, monkeypatch):
+    await list_tools(proxy, refund_entry())
+    monkeypatch.setattr(mcp, "REPLAY_MAX_BYTES", 40)
+    for request_id, key in enumerate(("first", "second"), start=2):
+        assert await proxy.accept_client(keyed_call(request_id, key))
+        proxy.accept_server({"id": request_id, "result": "x" * 16})
+    assert list(proxy.replays) == ["second"]
+    assert proxy.replay_bytes == len(b'{"result":"xxxxxxxxxxxxxxxx"}')
+    assert await proxy.accept_client(keyed_call(4, "large"))
+    proxy.accept_server({"id": 4, "result": "x" * (1024 * 1024)})
+    assert list(proxy.replays) == ["second", "large"]
+    assert not await proxy.accept_client(keyed_call(5, "large"))
+    assert mcp.write_client.call_args.args[0]["result"] == denied("idempotency_result_too_large")
+
+
+@pytest.mark.parametrize("server_message", [False, True])
+async def test_replay_expiration_on_other_messages(proxy, monkeypatch, server_message):
+    await list_tools(proxy, refund_entry())
+    now = 100
+    monkeypatch.setattr(mcp, "monotonic", lambda: now)
+    assert await proxy.accept_client(keyed_call(2))
+    proxy.accept_server({"id": 2, "result": {"cached": True}})
+    now += mcp.REPLAY_TTL
+    if server_message:
+        proxy.accept_server({"method": "notifications/progress"})
+    else:
+        assert await proxy.accept_client({"method": "notifications/initialized"})
+    assert not proxy.replays
+    assert proxy.replay_bytes == 0
+
+
+async def test_http_post_failures_and_late_sse_messages(proxy, monkeypatch):
+    incoming = asyncio.Queue()
+    outgoing = asyncio.Queue()
+    release_stream = asyncio.Event()
+    long_call_started = asyncio.Event()
+    finish_long_call = asyncio.Event()
+    records = []
+    proxy.sinks.append(records.append)
+
+    @asynccontextmanager
+    async def read_client():
+        yield incoming.get
+
+    def send(message):
+        incoming.put_nowait(mcp.encode({"jsonrpc": "2.0", **message}))
+
+    async def receive():
+        return await asyncio.wait_for(outgoing.get(), 5)
+
+    class Stream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b'data: {"jsonrpc":"2.0","id":2,"result":{}}\n\n'
+            await release_stream.wait()
+            yield b'data: {"jsonrpc":"2.0","method":"notifications/tools/list_changed"}\n\n'
+            yield b'data: {"jsonrpc":"2.0","method":"ping","id":"server"}\n\n'
+            raise httpx.ReadError("stream disconnected")
+
+    failures = {
+        3: httpx.ConnectTimeout("timed out"),
+        4: httpx.ReadError("disconnected"),
+        5: 429,
+        6: 500,
+        7: 404,
+    }
+
+    async def handle(request):
+        message = json.loads(request.content)
+        assert request.extensions["timeout"]["connect"] == 30
+        assert request.extensions["timeout"]["read"] is None
+        request_id = message["id"]
+        if request_id in failures:
+            assert request.headers["Mcp-Session-Id"] == "session-123"
+            failure = failures[request_id]
+            if isinstance(failure, Exception):
+                raise failure
+            return httpx.Response(failure)
+        if request_id == 2:
+            return httpx.Response(200, headers={"Content-Type": "text/event-stream"},
+                                  stream=Stream())
+        if request_id == 9:
+            assert request.headers["Mcp-Session-Id"] == "session-123"
+            long_call_started.set()
+            await finish_long_call.wait()
+        else:
+            assert "Mcp-Session-Id" not in request.headers
+        return httpx.Response(200, headers={"Mcp-Session-Id": "session-123"}, json={
+            "jsonrpc": "2.0", "id": request_id, "result": {},
+        })
+
+    client_factory = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: client_factory(
+        transport=httpx.MockTransport(handle), **kwargs,
+    ))
+    monkeypatch.setattr(mcp, "client_reader", read_client)
+    await list_tools(proxy, refund_entry())
+    monkeypatch.setattr(mcp, "write_client", outgoing.put_nowait)
+
+    task = asyncio.create_task(proxy.run_http(mcp.HttpUpstream("http://localhost", None)))
+    try:
+        send({"method": "initialize", "id": 1})
+        assert (await receive())["id"] == 1
+        send({"method": "ping", "id": 2})
+        assert (await receive())["result"] == {}
+        send({"method": "ping", "id": 9})
+        await asyncio.wait_for(long_call_started.wait(), 5)
+        for request_id, reason in enumerate(
+            ("timeout", "connection failed", "HTTP 429", "HTTP 500",
+             "session expired; initialize again"), start=3,
+        ):
+            send(keyed_call(request_id, str(request_id)))
+            response = await receive()
+            assert response == {
+                "jsonrpc": "2.0", "id": request_id,
+                "error": {"code": -32000, "message": f"Upstream request failed: {reason}"},
+            }
+            send(keyed_call(request_id + 10, str(request_id)))
+            assert (await receive())["result"] == denied("idempotency_outcome_unknown")
+
+        send({"method": "initialize", "id": 8})
+        assert (await receive())["id"] == 8
+        finish_long_call.set()
+        assert (await receive())["id"] == 9
+        release_stream.set()
+        assert (await receive())["method"] == "notifications/tools/list_changed"
+        assert (await receive())["id"] == "server"
+        assert not proxy.tools
+        incoming.put_nowait(b"")
+        assert await asyncio.wait_for(task, 5) == 0
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    assert [record.reason for record in records] == [
+        "granted", "idempotency_outcome_unknown",
+    ] * len(failures)

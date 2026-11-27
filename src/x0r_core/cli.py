@@ -31,15 +31,35 @@ def mcp_proxy(
     block_resources: bool = typer.Option(False, "--block-resources"),
     block_prompts: bool = typer.Option(False, "--block-prompts"),
     check: bool = typer.Option(False, "--check"),
-    command: list[str] = typer.Argument(..., metavar="SERVER_COMMAND..."),
+    upstream: str | None = typer.Option(None, "--upstream"),
+    upstream_token_env: str | None = typer.Option(None, "--upstream-token-env"),
+    command: list[str] | None = typer.Argument(None, metavar="SERVER_COMMAND..."),
 ) -> None:
-    """Guard a stdio MCP server. Put its command and arguments after --."""
+    """Guard an MCP server over stdio or Streamable HTTP."""
+    from httpx import InvalidURL
     from x0r_guard.policy_file import load_policy_file
     from x0r_guard.sink import core_sink
 
-    from .connectors.mcp import Proxy, append_decision, caller_key, check_server, read_caller
+    from .connectors.mcp import (
+        HttpUpstream,
+        Proxy,
+        append_decision,
+        caller_key,
+        check_server,
+        read_caller,
+    )
 
     try:
+        if (upstream is None) == (not command):
+            raise ValueError("provide either --upstream or a server command after --")
+        if upstream_token_env is not None and upstream is None:
+            raise ValueError("--upstream-token-env requires --upstream")
+        token = None
+        if upstream_token_env is not None:
+            token = os.environ.get(upstream_token_env)
+            if not token:
+                raise ValueError("--upstream-token-env requires a nonempty environment variable")
+        http = HttpUpstream(upstream, token) if upstream is not None else None
         file = load_policy_file(policy)
         sinks = []
         get_caller = None
@@ -56,17 +76,17 @@ def mcp_proxy(
             if caller_token_file is not None:
                 key = caller_key(os.environ.get("X0R_CALLER_KEY", ""))
                 get_caller = partial(read_caller, caller_token_file, key, audience)
-    except ValueError as exc:
+    except (ValueError, InvalidURL) as exc:
         typer.echo(f"mcp-proxy: {exc}", err=True)
         raise typer.Exit(2) from exc
 
     try:
         if check:
-            status = asyncio.run(check_server(command, file))
+            status = asyncio.run(check_server(http if http is not None else command, file))
         else:
             proxy = Proxy(file, sinks, get_caller=get_caller, block_resources=block_resources,
                           block_prompts=block_prompts)
-            status = asyncio.run(proxy.run(command))
+            status = asyncio.run(proxy.run_http(http) if http is not None else proxy.run(command))
     except (OSError, ValueError) as exc:
         typer.echo(f"mcp-proxy: {exc}", err=True)
         raise typer.Exit(1) from exc

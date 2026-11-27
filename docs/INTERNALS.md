@@ -435,19 +435,23 @@ If all seven pass, the result is `Decision(True, "granted")`.
 agent. The operator list (check 3) is set by whoever runs the server. Both must say yes. So a
 workspace user can't give their agent `http_get` on their own.
 
-**What check 6 enforces.** It covers a small, safe subset of JSON Schema:
+**What check 6 enforces.** Core, `wrap()`, and the MCP proxy share the guard's
+JSON Schema subset.
 
-- `type`: one of `string`, `integer`, `number` or `boolean`. A property with any other type
-  or no type is denied.
-- `required` fields must be present. A required string can't be blank.
-- `minLength` / `maxLength` for strings. Every string is capped at 8,000 characters anyway.
-- `minimum` / `maximum` for numbers. `NaN` and infinity are always denied.
-- `enum` and `const`. `1` matches `1.0`, but `true` never matches `1`.
-- `true` doesn't count as a number. Python thinks `True == 1`, and the guard doesn't.
-- An argument the schema doesn't declare is denied (`unexpected_arguments`).
-- That's an allowlist. A schema that uses any other keyword (`pattern`, `format`, `anyOf`,
-  `$ref`, `minProperties`, ...), on a property or at the root, is denied. A constraint is
-  never skipped without anyone noticing.
+- Tool arguments are an object. Properties and array items can be `string`,
+  `integer`, `number`, `boolean`, `array`, or `object`.
+- Objects support `properties`, `required`, and boolean `additionalProperties`.
+  Undeclared keys are denied even when `additionalProperties` is true.
+- Required strings must be nonblank. The guard enforces `minLength` and `maxLength`
+  with a hard cap of 8,000 characters, and applies `minimum` and `maximum` to finite numbers.
+- Arrays require a supported `items` schema and support `minItems`, `maxItems`, and
+  `uniqueItems`. Uniqueness, `enum`, and `const` compare arrays and objects recursively.
+  `1` matches `1.0`, and booleans are distinct from numbers.
+- Local `$ref` values can point to `#/$defs/Name` or `#/definitions/Name` in the root
+  schema. The root is depth zero. Each property, item schema, and reference hop adds
+  one level, up to a maximum of five.
+- Remote and cyclic references, deeper schemas, and unsupported keywords such as
+  `pattern`, `format`, and `anyOf` deny calls even when the affected property is optional.
 
 **Check 7 is where business rules go.** The hook gets the arguments and a `HookContext`
 holding the caller. For example:
@@ -484,7 +488,7 @@ Each decision becomes a `policy_decisions` row:
 Read the log with `GET /v1/policy/decisions`. You can filter by `allowed`, `run_id` or
 `tool_call_id`.
 
-`POLICY_VERSION` is `"3"` (it went to 3 when `enum`, `const` and the keyword allowlist were added). If the meaning of a decision ever changes, the version goes up,
+`POLICY_VERSION` is `"4"`. If the meaning of a decision ever changes, the version goes up,
 so old records stay understandable.
 
 

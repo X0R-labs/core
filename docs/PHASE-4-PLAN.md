@@ -1,6 +1,6 @@
 # Phase 4 plan: connectors, shared policy, trustworthy log
 
-4a and 4b are done. 4c is in progress. 4d through 4h are planned. This plan breaks
+4a through 4c are done. 4d through 4h are planned. This plan breaks
 phase 4 of [GATEWAY-PLAN.md](GATEWAY-PLAN.md) into pieces that can land as separate pull
 requests.
 
@@ -30,7 +30,7 @@ flowchart LR
 | --- | --- | --- | --- |
 | 4a (done) | Signed caller identity | Every connector crosses a hop. The caller must arrive in a form a proxy can trust | S |
 | 4b (done) | Policy as a file, decision sink | One policy for Core, SDK and connectors, and one place to see every decision | M |
-| 4c (in progress) | MCP guard proxy | Checks at the moment a tool actually runs. Works with any MCP client | M |
+| 4c (done) | MCP guard proxy | Checks at the moment a tool actually runs. Works with any MCP client | M |
 | 4d | LiteLLM connector | For teams that already route through LiteLLM | S |
 | 4e | Hash-chained decision log | Makes edits and deletions detectable | S |
 | 4f | Retention and redaction | What buyers ask about once the log holds real data | S |
@@ -135,7 +135,7 @@ sequenceDiagram
   end
 ```
 
-**Part 1 is done.** `x0r mcp-proxy` wraps a local stdio server and uses its
+**Done.** `x0r mcp-proxy` wraps a stdio or Streamable HTTP server and uses its
 `tools/list` schemas to check each call. It hides tools outside the policy's allow
 list and denies calls with unsupported schemas. `--check` reports the allow-list
 and schema status of each tool at setup time.
@@ -150,12 +150,15 @@ The stdio integration tests use a server that records each call. The
 [Claude Desktop example](../examples/mcp/claude_desktop_config.json) shows how to
 configure the proxy.
 
+The guard supports arrays, nested objects and local schema references. The proxy
+can replay a completed call for 10 minutes using a client-supplied idempotency
+key, after checking and recording the retry. Matching retries in flight are denied.
+
 Follow-ups
 
-- Add HTTP upstream support and per-request caller tokens for HTTP.
-- Add idempotency replay for calls that carry a client-supplied key. A client retry
-  can currently run a tool twice if its original response was lost.
-- Widen the guard's schema subset to cover arrays, nested objects and local references.
+- Add a standalone HTTP GET event stream for unsolicited upstream messages.
+- Add per-request caller tokens for HTTP.
+- Add an MCP connector scenario to `x0r security-demo`.
 
 ### 4d. LiteLLM connector
 
@@ -268,7 +271,6 @@ The rules from GATEWAY-PLAN.md still hold. In addition:
 - Each connector fails closed. If it can't check something, it refuses it.
 - Connectors are extras. A plain `pip install x0r-core` gets only `x0r-guard` added
   (standard library only), and no connector dependencies.
-- `x0r security-demo` gets a connector scenario once 4c lands.
 
 ## Decisions
 
