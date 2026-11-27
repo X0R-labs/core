@@ -19,8 +19,8 @@ class ToolContext:
 
 Handler = Callable[..., Awaitable[Any]]
 # ``authorize`` is an extra, tool-specific policy check run after the generic argument
-# checks. Core calls it with the arguments and its Settings; it returns a denial reason,
-# or None to allow.
+# checks. It gets the arguments and a guard HookContext (caller, tool_call_id, and Core's
+# Settings as ``config``); it returns a denial reason, or None to allow.
 
 
 @dataclass

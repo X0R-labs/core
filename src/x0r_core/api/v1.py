@@ -7,6 +7,7 @@ from sqlalchemy import delete, func, select
 
 from ..config import get_settings
 from ..deps import ApiKeyDep, SessionDep, WorkspaceDep, require_bootstrap
+from ..guard import Caller
 from ..models import (
     Agent,
     Chunk,
@@ -229,13 +230,24 @@ async def run_agent(agent_id: str, payload: RunIn, session: SessionDep, workspac
         raise HTTPException(status_code=404, detail="Agent not found.")
 
     try:
-        run = await agent_service.run_agent(session, workspace, agent, payload.input)
+        caller = (
+            Caller(subject=payload.caller.subject, attributes=dict(payload.caller.attributes))
+            if payload.caller else None
+        )
+        run = await agent_service.run_agent(
+            session, workspace, agent, payload.input, caller=caller,
+        )
     except usage_service.QuotaExceeded as exc:
         await session.rollback()
         raise HTTPException(
             status_code=429,
             detail=str(exc),
             headers={"X-Quota-Used": str(exc.used), "X-Quota-Limit": str(exc.quota)},
+        ) from exc
+    except agent_service.DecisionNotSaved as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="The policy decision could not be saved, so the tool was not run.",
         ) from exc
     except agent_service.AgentRunError as exc:
         await session.commit()
@@ -274,8 +286,11 @@ async def list_policy_decisions(
     limit: int = Query(default=50, ge=1, le=200),
     allowed: bool | None = None,
     run_id: str | None = None,
+    tool_call_id: str | None = Query(default=None, max_length=200),
 ):
     query = select(PolicyDecision).where(PolicyDecision.workspace_id == workspace.id)
+    if tool_call_id is not None:
+        query = query.where(PolicyDecision.tool_call_id == tool_call_id)
     if allowed is not None:
         query = query.where(PolicyDecision.allowed == allowed)
     if run_id is not None:

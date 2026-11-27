@@ -59,7 +59,7 @@ infrastructure and pointed at any OpenAI-compatible model endpoint.
   Add your own ([example](examples/custom_tool.py)): every call is checked against the
   tool's declared argument schema and the operator allowlist before it runs.
 - **Policy decision log** — every tool authorization, allowed or denied, with its reason,
-  at `GET /v1/policy/decisions`.
+  caller and tool-call id, saved before the tool runs, at `GET /v1/policy/decisions`.
 - **Runs** — full transcript persisted: every model call, every tool call, every result.
 - **Metering** — monthly token quota per workspace, enforced with `429`, plus a usage
   breakdown by kind.

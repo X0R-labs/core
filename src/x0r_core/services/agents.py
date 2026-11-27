@@ -5,6 +5,7 @@ from time import perf_counter
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..guard import Caller
 from ..models import Agent, PolicyDecision, Run, Workspace
 from ..policy import POLICY_VERSION, authorize_tool
 from ..providers import Completion, Provider, Usage, build_provider
@@ -12,6 +13,10 @@ from ..tools import ToolContext
 from ..tools import resolve as resolve_tools
 from ..tools import schemas as tool_schemas
 from . import usage as usage_service
+
+
+class DecisionNotSaved(Exception):
+    """The policy decision could not be committed, so the tool was not run."""
 
 
 class AgentRunError(Exception):
@@ -31,6 +36,7 @@ async def run_agent(
     user_input: str,
     *,
     provider: Provider | None = None,
+    caller: Caller | None = None,
 ) -> Run:
     await usage_service.assert_within_quota(session, workspace)
 
@@ -118,17 +124,31 @@ async def run_agent(
                     arguments=call.arguments,
                     settings=ctx.settings,
                     registry={tool.name: tool for tool in tools},
+                    caller=caller,
+                    tool_call_id=call.id,
                 )
                 steps.append({
                     "type": "policy", "version": POLICY_VERSION, "tool": call.name,
+                    "tool_call_id": call.id,
                     "allowed": decision.allowed, "reason": decision.reason,
                     "workspace_id": workspace.id,
+                    "caller_subject": caller.subject if caller else None,
                 })
                 session.add(PolicyDecision(
                     workspace_id=workspace.id, run_id=run.id, agent_id=agent.id,
-                    tool=call.name[:120], allowed=decision.allowed, reason=decision.reason,
+                    tool=call.name[:120], tool_call_id=call.id[:200] if call.id else None,
+                    caller_subject=caller.subject[:200] if caller else None,
+                    allowed=decision.allowed, reason=decision.reason,
                     policy_version=POLICY_VERSION,
                 ))
+                # Commit before the handler runs, so the decision survives even if the
+                # process dies mid-action. This also commits the run as "running", along
+                # with any other pending work in this session.
+                try:
+                    await session.commit()
+                except Exception as exc:
+                    await session.rollback()
+                    raise DecisionNotSaved(str(exc)) from exc
                 if not decision.allowed:
                     outcome = "blocked"
                     final = "Stopped: tool action denied by execution policy."
@@ -167,6 +187,8 @@ async def run_agent(
 
         run.status = outcome
         run.output = final
+    except DecisionNotSaved:
+        raise
     except Exception as exc:  # noqa: BLE001
         run.status = "failed"
         run.error = str(exc)

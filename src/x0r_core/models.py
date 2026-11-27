@@ -122,7 +122,8 @@ class Run(Base):
 class PolicyDecision(Base):
     """Append-only record of every tool-call authorization, allowed or denied.
 
-    Arguments are deliberately not stored: they may carry user data.
+    Arguments are deliberately not stored: they may carry user data. The caller's subject
+    id is stored, because the record must say who the action was for.
     """
 
     __tablename__ = "policy_decisions"
@@ -132,6 +133,8 @@ class PolicyDecision(Base):
     run_id: Mapped[str | None] = mapped_column(ForeignKey("runs.id"), nullable=True, index=True)
     agent_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     tool: Mapped[str] = mapped_column(String(120))
+    tool_call_id: Mapped[str | None] = mapped_column(String(200), nullable=True, index=True)
+    caller_subject: Mapped[str | None] = mapped_column(String(200), nullable=True)
     allowed: Mapped[bool] = mapped_column(Boolean)
     reason: Mapped[str] = mapped_column(Text)  # custom hooks can return any reason
     policy_version: Mapped[str] = mapped_column(String(10))

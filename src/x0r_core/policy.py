@@ -11,6 +11,7 @@ from .guard import (
     MAX_STRING_LENGTH,
     POLICY_VERSION,
     ActionRequest,
+    Caller,
     Decision,
     check_action,
     check_arguments,
@@ -37,6 +38,7 @@ def authorize_tool(
     *, workspace_id: str, agent_workspace_id: str, agent_tools: list[str],
     tool_name: str, arguments: object, settings: Settings,
     registry: dict[str, Tool] | None = None,
+    caller: Caller | None = None, tool_call_id: str | None = None,
 ) -> Decision:
     if registry is None:
         from .tools.builtin import REGISTRY as registry
@@ -46,7 +48,9 @@ def authorize_tool(
         agent_tools=agent_tools,
         tool_name=tool_name,
         arguments=arguments,
+        caller=caller,
+        tool_call_id=tool_call_id,
     )
     return check_action(
-        request, operator_tools=operator_tools(settings), tools=registry, context=settings,
+        request, operator_tools=operator_tools(settings), tools=registry, config=settings,
     )

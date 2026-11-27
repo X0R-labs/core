@@ -11,7 +11,7 @@ Before any tool runs, built-in or custom, the execution service checks (policy v
 3. The tool is permitted by the operator-controlled `X0R_OPERATOR_TOOL_ALLOWLIST`.
 4. The tool is registered.
 5. The arguments match the tool's own declared `parameters` schema: required fields present, declared types (`string`, `integer`, `number`, `boolean`), `minLength`/`maxLength`, `minimum`/`maximum`. Undeclared arguments, untyped properties, blank required strings and non-finite numbers (NaN, Infinity) are denied; strings are capped at 8000 characters.
-6. The tool's optional `authorize` hook allows the call. `http_get` uses this hook for its host allowlist, URL credential and port check. A hook that raises denies the call (`authorizer_error`).
+6. The tool's optional `authorize` hook allows the call. The hook gets the arguments and a `HookContext` with the `caller` (if the run has one), the `tool_call_id`, and Core's settings as `config`, so a rule like "only the caller's own record" can be written once. `http_get` uses this hook for its host allowlist, URL credential and port check. A hook that raises denies the call (`authorizer_error`).
 
 The default operator list is `knowledge_search,calculator`. HTTP remains unavailable unless an operator explicitly grants `http_get` and configures `X0R_HTTP_TOOL_ALLOWLIST`. Custom registry tools run only after the operator adds them to the allowlist, and only with arguments their schema accepts. Schema checks constrain argument shape, not what a handler does with valid input: a custom tool's handler is trusted code and must enforce its own business rules.
 
@@ -20,6 +20,12 @@ The rules live in `x0r_core.guard`, which imports only the Python standard libra
 Policy version 1 (commit `8538e2d`, referenced by the sample review) denied all custom tools and hard-coded the built-in argument rules. Version 2 keeps the same reason codes and the same outcomes for built-in tools.
 
 Retrieved text and model-generated tool requests cannot modify operator settings through this execution path. This does not prevent all prompt injection: an agent can still misuse an otherwise permitted operation or generate misleading answers.
+
+**Caller identity.** A run may carry a `caller` (subject id plus a few attributes). Core trusts it because the request is authenticated with the workspace API key: the app vouches for its own end user. Core does not verify the end user itself, and the caller is not signed yet; signing matters once identity passes through a proxy and is planned for the connector phase.
+
+**Saved before the action.** Each decision is committed to the database before the tool handler runs, so the record survives a crash mid-action. This also commits the run row as `running` at that point. The record is linked to the model's `tool_call_id` when the provider sends one (stored as null otherwise, and cut to 200 characters; the full id stays in the run transcript). If the decision cannot be saved, the tool is not run and the run request returns `503`.
+
+Hooks written before `HookContext` (taking settings as the second argument) keep working: unknown attributes on the context fall through to Core's settings.
 
 Denials stop the run with `status="blocked"` without invoking the requested handler. A `policy` event in the run records version, workspace, tool, allow/deny and reason; it omits argument values. Each decision is also written to the append-only `policy_decisions` table and listed by `GET /v1/policy/decisions` (workspace-scoped; filter by `allowed` or `run_id`), again without argument values. Step or per-step tool-call limits produce `limit_exceeded`, not `succeeded`. Existing consumers must accept these additional status values. Operators can configure `X0R_MAX_TOOL_CALLS_PER_STEP` (default 8).
 
