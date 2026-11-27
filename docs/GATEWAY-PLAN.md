@@ -44,7 +44,7 @@ Connectors are thin adapters that find tool calls wherever they appear and ask t
 | 2 | Guard extracted to `x0r_core.guard`: standard library only, no imports from tools, models, providers or the web app. `x0r_core.policy.authorize_tool` stays as a wrapper | Implemented |
 | 3a | Caller identity on runs (subject and attributes, vouched for by the API key) passed to tool rules; decision committed before the tool runs; decision linked to the tool-call ID | Implemented |
 | 3b | Python SDK wrapper (`x0r_core.guard.wrap`) that checks tool calls returned by any OpenAI-compatible client before the app runs them. See [SDK.md](SDK.md) | Implemented |
-| 4 | Connectors driven by the first customers: LiteLLM guardrail hook, MCP proxy in front of tool servers, with signed caller identity across the hop. Per-workspace policy, retention and redaction controls, tamper-evident decision log | Proposed |
+| 4 | Connectors driven by the first customers: LiteLLM guardrail hook, MCP proxy in front of tool servers, with signed caller identity across the hop. Per-workspace policy, retention and redaction controls, tamper-evident decision log. Broken down in [PHASE-4-PLAN.md](PHASE-4-PLAN.md) | Planned |
 
 Each phase lands as its own pull request with tests and keeps the existing API working.
 
