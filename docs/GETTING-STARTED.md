@@ -111,19 +111,32 @@ See [Caller tokens](CALLER-TOKENS.md) to set up signed caller identities.
 
 ## Employees using MCP tools
 
-MCP support is coming in [phase 4c](PHASE-4-PLAN.md). A planned configuration for
-a local MCP server looks like this:
+Configure your MCP client to launch `x0r mcp-proxy` in front of your local
+stdio server. Start from the [Claude Desktop example](../examples/mcp/claude_desktop_config.json)
+and replace the paths and command with your own. Use a
+[TOML policy](../examples/policy.toml) to specify which tools and arguments employees
+can use.
 
-```json
-{
-  "mcpServers": {
-    "orders": {
-      "command": "x0r",
-      "args": ["mcp-proxy", "--policy", "/path/to/policy.toml", "--", "orders-mcp"]
-    }
-  }
-}
+Check the policy against the server's tool schemas before using the proxy.
+
+```bash
+x0r mcp-proxy --check --policy /path/to/policy.toml -- orders-mcp
 ```
+
+The check lists each tool's allow-list and schema status. It exits with status 1
+when an allowed tool uses a schema the guard cannot check.
+
+For live use, specify `--decision-log /path/to/decisions.jsonl` to save decisions
+locally, `--core-url https://core.example.com` with `X0R_API_KEY` to save them to
+Core, or both. A call is denied if a configured destination fails to save the decision.
+Use `--block-resources` or `--block-prompts` to disable those MCP methods.
+
+If your policy uses caller rules, as the sample TOML policy does, set
+`X0R_CALLER_KEY` to the base64url audience verification key in the MCP client's
+environment and add `--caller-token-file /path/to/token` before `--`. Issue
+[caller tokens](CALLER-TOKENS.md) for the `mcp` audience or set `--audience` to
+match your issuer. The proxy reads the file before every tool call. A client retry
+after a lost response can run the tool again.
 
 ## Releasing
 

@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "orders": {
+      "command": "/path/to/x0r",
+      "args": [
+        "mcp-proxy",
+        "--policy", "/path/to/policy.toml",
+        "--decision-log", "/path/to/decisions.jsonl",
+        "--", "/path/to/orders-mcp"
+      ]
+    }
+  }
+}

@@ -122,7 +122,7 @@ sequenceDiagram
   P->>S: tools/list
   S-->>P: tools + schemas
   P-->>Client: only the allowed tools
-  Client->>P: tools/call(name, args, caller token)
+  Client->>P: tools/call(name, args)
   P->>P: verify caller, check_action, save decision
   alt allowed
     P->>S: tools/call
@@ -133,37 +133,27 @@ sequenceDiagram
   end
 ```
 
-- `x0r mcp-proxy --policy policy.toml -- <server command>` for stdio servers, and
-  `--upstream <url>` for HTTP servers.
-- Schemas come from the real server's `tools/list`, so check 6 uses the schema the
-  server actually enforces.
-- MCP tools often use arrays, nested objects and `$ref`, which the guard denies today.
-  4c widens the schema subset (arrays with `items`, `minItems`/`maxItems`, nested
-  objects to a fixed depth, local `$ref`). Anything still unsupported stays denied.
-  `x0r mcp-proxy --check` lists every tool whose schema the guard can't fully check, so
-  this shows up at setup time, not in production. An operator can set
-  `schema = "skip"` on one tool in the policy file to check only the grants and rules
-  for it, and each such decision is logged with that fact.
-- Retries: the proxy never retries a call itself. If the client sends an idempotency key
-  in the call's `_meta`, the proxy keeps the result for a short window and replays it
-  for a repeated key instead of calling the server twice. Without a key, a client that
-  retries after a lost response can run a tool twice, as with any MCP server. The docs say
-  so, and recommend idempotent tools for anything that moves money or data.
-- The caller comes from a signed token (4a). Over HTTP it's sent with each request.
-  For stdio, the proxy reads it from `--caller-token-file`, again before each call, so the
-  app can write a fresh token before the old one expires and a long session keeps
-  working. The proxy never passes the token, its file path or any `X0R_*` variable to the
-  server it starts: the child gets a cleaned environment, so it can't read and replay
-  the token.
-- Unknown methods that can cause actions are refused. Resources and prompts are passed
-  through read-only, with a flag to block them.
-- It lives in `x0r_core.connectors.mcp` behind an `x0r-core[mcp]` extra. The guard
-  package itself never imports `mcp`.
+**Part 1 is done.** `x0r mcp-proxy` wraps a local stdio server and uses its
+`tools/list` schemas to check each call. It hides tools outside the policy's allow
+list and denies calls with unsupported schemas. `--check` reports the allow-list
+and schema status of each tool at setup time.
 
-Done when: a denied call never reaches the server (proven with a test server that
-records calls), `tools/list` hides tools the policy doesn't allow, it works with stdio
-and HTTP, the child process can't see the caller token, a repeated idempotency key runs
-the tool once, and there's an example config for Claude Desktop.
+The proxy reads the signed caller token from `--caller-token-file` before each call.
+The child receives an environment with all `X0R_*` variables removed, and the proxy
+keeps the token path out of the child command. Decisions must be saved to a local log,
+Core, or both before a call can proceed. Unknown client request methods are refused,
+and resources and prompts can each be blocked by a flag.
+
+The stdio integration tests use a server that records each call. The
+[Claude Desktop example](../examples/mcp/claude_desktop_config.json) shows how to
+configure the proxy.
+
+Follow-ups
+
+- Add HTTP upstream support and per-request caller tokens for HTTP.
+- Add idempotency replay for calls that carry a client-supplied key. A client retry
+  can currently run a tool twice if its original response was lost.
+- Widen the guard's schema subset to cover arrays, nested objects and local references.
 
 ### 4d. LiteLLM connector
 
