@@ -4,7 +4,7 @@ This is an experimental backend, not an end-user authorization platform or a cer
 
 ## Implemented boundary
 
-Before any tool runs, built-in or custom, the execution service checks (policy version 2):
+Before any tool runs, built-in or custom, the execution service checks (policy version 4):
 
 1. The agent belongs to the current workspace.
 2. The tool is granted in the agent configuration.
@@ -25,7 +25,7 @@ The default operator list is `knowledge_search,calculator`. HTTP remains unavail
 
 The rules live in `x0r_guard` (the `x0r-guard` package), which imports only the Python standard library so other connectors can reuse them; Core calls it through `x0r_core.policy.authorize_tool`.
 
-Policy version 1 (commit `8538e2d`, referenced by the sample review) denied all custom tools and hard-coded the built-in argument rules. Version 2 keeps the same reason codes and the same outcomes for built-in tools.
+Policy version 1 (commit `8538e2d`, referenced by the sample review) denied all custom tools and hard-coded the built-in argument rules. Version 2 kept the same reason codes and the same outcomes for built-in tools.
 
 Retrieved text and model-generated tool requests cannot modify operator settings through this execution path. This does not prevent all prompt injection: an agent can still misuse an otherwise permitted operation or generate misleading answers.
 

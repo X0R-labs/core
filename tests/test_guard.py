@@ -247,7 +247,9 @@ def test_local_references(definitions):
 def test_unsupported_optional_schema_is_denied(spec):
     from x0r_guard.engine import check_arguments, schema_supported
 
-    schema = {"properties": {"v": spec}, "$defs": {"Loop": {"$ref": "#/$defs/Loop"}}}
+    schema = {"properties": {"v": spec}}
+    if spec.get("$ref") == "#/$defs/Loop":
+        schema["$defs"] = {"Loop": spec}
     assert not schema_supported(schema)
     assert check_arguments(schema, {}) == "invalid_arguments"
 
@@ -265,3 +267,18 @@ def test_schema_depth_limit():
     deeper = {"type": "object", "properties": {"v": schema}}
     assert not schema_supported(deeper)
     assert check_arguments(deeper, {"v": arguments}) == "invalid_arguments"
+
+
+def test_huge_integers_in_numeric_constraints():
+    from x0r_guard.engine import check_arguments
+
+    huge = 10**400
+    schema = {"properties": {"values": {
+        "type": "array", "uniqueItems": True,
+        "items": {"type": "number", "minimum": 1.0, "maximum": huge, "enum": [1, huge]},
+    }}}
+    assert check_arguments(schema, {"values": [1.0, huge]}) is None
+    for values in ([huge, huge], [huge + 1], [-huge], [True]):
+        assert check_arguments(schema, {"values": values}) == "invalid_arguments"
+    schema["properties"]["values"]["items"]["maximum"] = 1e300
+    assert check_arguments(schema, {"values": [huge]}) == "invalid_arguments"

@@ -205,7 +205,8 @@ def _equality_key(value: Any) -> Any:
     if isinstance(value, dict):
         return (dict, frozenset((key, _equality_key(item)) for key, item in value.items()))
     if type(value) in (int, float):
-        return (float, value)
+        # Python hashes equal ints and floats alike. Keep large ints at full precision.
+        return (int, value)
     return (type(value), value)
 
 

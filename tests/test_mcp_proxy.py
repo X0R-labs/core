@@ -631,3 +631,209 @@ async def test_idempotency_in_flight_and_expiry(proxy, monkeypatch):
     proxy.tools["refund"] = tool
     now += 1
     assert await proxy.accept_client(dict(first, id=6))
+
+
+def keyed_call(request_id, key="refund-key"):
+    return {"jsonrpc": "2.0", "method": "tools/call", "id": request_id, "params": {
+        "name": "refund", "arguments": {"amount": 1}, "_meta": {"idempotencyKey": key},
+    }}
+
+
+@pytest.mark.parametrize("key", [None, False, 1, [], "", "k" * 201])
+async def test_invalid_idempotency_key_is_recorded(proxy, key):
+    records = []
+    proxy.sinks.append(records.append)
+    await list_tools(proxy, refund_entry())
+    assert not await proxy.accept_client(keyed_call(2, key))
+    assert mcp.write_client.call_args.args[0]["result"] == denied("invalid_idempotency_key")
+    assert [record.reason for record in records] == ["invalid_idempotency_key"]
+
+
+@pytest.mark.parametrize("body", [{}, {"result": {}, "error": {}}])
+async def test_ambiguous_reply_marks_outcome_unknown(proxy, body):
+    await list_tools(proxy, refund_entry())
+    assert await proxy.accept_client(keyed_call(2))
+    proxy.accept_server({"id": 2, **body})
+    proxy.accept_server({"method": "notifications/tools/list_changed"})
+    assert not await proxy.accept_client(keyed_call(3))
+    assert mcp.write_client.call_args.args[0]["result"] == denied("idempotency_outcome_unknown")
+
+
+async def test_stdio_exit_marks_outcome_unknown(proxy, setup_proxy, monkeypatch):
+    _, calls, _ = setup_proxy
+    incoming = asyncio.Queue()
+    incoming.put_nowait(mcp.encode({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}))
+
+    def deliver(message):
+        if message["id"] == 1:
+            incoming.put_nowait(mcp.encode(keyed_call(2)))
+
+    @asynccontextmanager
+    async def read_client():
+        yield incoming.get
+
+    monkeypatch.setattr(mcp, "client_reader", read_client)
+    mcp.write_client.side_effect = deliver
+    assert await asyncio.wait_for(
+        proxy.run([sys.executable, str(SERVER), str(calls), "--exit-after-call"]), 5,
+    ) == 1
+    assert len(rows(calls)) == 1
+    assert not await proxy.accept_client(keyed_call(3))
+    assert mcp.write_client.call_args.args[0]["result"] == denied("idempotency_outcome_unknown")
+
+
+async def test_replay_fingerprint_normalizes_nested_numbers(proxy):
+    entry = refund_entry()
+    entry["inputSchema"]["properties"]["items"] = {
+        "type": "array", "items": {"type": "object", "properties": {"value": {"type": "number"}}},
+    }
+    await list_tools(proxy, entry)
+    first = keyed_call(2)
+    first["params"]["arguments"]["items"] = [{"value": 1}]
+    assert await proxy.accept_client(first)
+    proxy.accept_server({"id": 2, "result": {"cached": True}})
+    retry = keyed_call(3)
+    retry["params"]["arguments"]["items"] = [{"value": 1.0}]
+    assert not await proxy.accept_client(retry)
+    assert mcp.write_client.call_args.args[0]["result"] == {"cached": True}
+    retry["params"]["arguments"]["items"] = [{"value": True}]
+    assert not await proxy.accept_client(retry)
+    assert mcp.write_client.call_args.args[0]["result"] == denied("idempotency_key_reused")
+
+
+async def test_replay_body_limits(proxy, monkeypatch):
+    await list_tools(proxy, refund_entry())
+    monkeypatch.setattr(mcp, "REPLAY_MAX_BYTES", 40)
+    for request_id, key in enumerate(("first", "second"), start=2):
+        assert await proxy.accept_client(keyed_call(request_id, key))
+        proxy.accept_server({"id": request_id, "result": "x" * 16})
+    assert list(proxy.replays) == ["second"]
+    assert proxy.replay_bytes == len(b'{"result":"xxxxxxxxxxxxxxxx"}')
+    assert await proxy.accept_client(keyed_call(4, "large"))
+    proxy.accept_server({"id": 4, "result": "x" * (1024 * 1024)})
+    assert list(proxy.replays) == ["second", "large"]
+    assert not await proxy.accept_client(keyed_call(5, "large"))
+    assert mcp.write_client.call_args.args[0]["result"] == denied("idempotency_result_too_large")
+
+
+@pytest.mark.parametrize("server_message", [False, True])
+async def test_replay_expiration_on_other_messages(proxy, monkeypatch, server_message):
+    await list_tools(proxy, refund_entry())
+    now = 100
+    monkeypatch.setattr(mcp, "monotonic", lambda: now)
+    assert await proxy.accept_client(keyed_call(2))
+    proxy.accept_server({"id": 2, "result": {"cached": True}})
+    now += mcp.REPLAY_TTL
+    if server_message:
+        proxy.accept_server({"method": "notifications/progress"})
+    else:
+        assert await proxy.accept_client({"method": "notifications/initialized"})
+    assert not proxy.replays
+    assert proxy.replay_bytes == 0
+
+
+async def test_http_post_failures_and_late_sse_messages(proxy, monkeypatch):
+    incoming = asyncio.Queue()
+    outgoing = asyncio.Queue()
+    release_stream = asyncio.Event()
+    long_call_started = asyncio.Event()
+    finish_long_call = asyncio.Event()
+    records = []
+    proxy.sinks.append(records.append)
+
+    @asynccontextmanager
+    async def read_client():
+        yield incoming.get
+
+    def send(message):
+        incoming.put_nowait(mcp.encode({"jsonrpc": "2.0", **message}))
+
+    async def receive():
+        return await asyncio.wait_for(outgoing.get(), 5)
+
+    class Stream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b'data: {"jsonrpc":"2.0","id":2,"result":{}}\n\n'
+            await release_stream.wait()
+            yield b'data: {"jsonrpc":"2.0","method":"notifications/tools/list_changed"}\n\n'
+            yield b'data: {"jsonrpc":"2.0","method":"ping","id":"server"}\n\n'
+            raise httpx.ReadError("stream disconnected")
+
+    failures = {
+        3: httpx.ConnectTimeout("timed out"),
+        4: httpx.ReadError("disconnected"),
+        5: 429,
+        6: 500,
+        7: 404,
+    }
+
+    async def handle(request):
+        message = json.loads(request.content)
+        assert request.extensions["timeout"]["connect"] == 30
+        assert request.extensions["timeout"]["read"] is None
+        request_id = message["id"]
+        if request_id in failures:
+            assert request.headers["Mcp-Session-Id"] == "session-123"
+            failure = failures[request_id]
+            if isinstance(failure, Exception):
+                raise failure
+            return httpx.Response(failure)
+        if request_id == 2:
+            return httpx.Response(200, headers={"Content-Type": "text/event-stream"},
+                                  stream=Stream())
+        if request_id == 9:
+            assert request.headers["Mcp-Session-Id"] == "session-123"
+            long_call_started.set()
+            await finish_long_call.wait()
+        else:
+            assert "Mcp-Session-Id" not in request.headers
+        return httpx.Response(200, headers={"Mcp-Session-Id": "session-123"}, json={
+            "jsonrpc": "2.0", "id": request_id, "result": {},
+        })
+
+    client_factory = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: client_factory(
+        transport=httpx.MockTransport(handle), **kwargs,
+    ))
+    monkeypatch.setattr(mcp, "client_reader", read_client)
+    await list_tools(proxy, refund_entry())
+    monkeypatch.setattr(mcp, "write_client", outgoing.put_nowait)
+
+    task = asyncio.create_task(proxy.run_http(mcp.HttpUpstream("http://localhost", None)))
+    try:
+        send({"method": "initialize", "id": 1})
+        assert (await receive())["id"] == 1
+        send({"method": "ping", "id": 2})
+        assert (await receive())["result"] == {}
+        send({"method": "ping", "id": 9})
+        await asyncio.wait_for(long_call_started.wait(), 5)
+        for request_id, reason in enumerate(
+            ("timeout", "connection failed", "HTTP 429", "HTTP 500",
+             "session expired; initialize again"), start=3,
+        ):
+            send(keyed_call(request_id, str(request_id)))
+            response = await receive()
+            assert response == {
+                "jsonrpc": "2.0", "id": request_id,
+                "error": {"code": -32000, "message": f"Upstream request failed: {reason}"},
+            }
+            send(keyed_call(request_id + 10, str(request_id)))
+            assert (await receive())["result"] == denied("idempotency_outcome_unknown")
+
+        send({"method": "initialize", "id": 8})
+        assert (await receive())["id"] == 8
+        finish_long_call.set()
+        assert (await receive())["id"] == 9
+        release_stream.set()
+        assert (await receive())["method"] == "notifications/tools/list_changed"
+        assert (await receive())["id"] == "server"
+        assert not proxy.tools
+        incoming.put_nowait(b"")
+        assert await asyncio.wait_for(task, 5) == 0
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    assert [record.reason for record in records] == [
+        "granted", "idempotency_outcome_unknown",
+    ] * len(failures)

@@ -43,6 +43,8 @@ for line in sys.stdin:
     elif method == "tools/call":
         with calls.open("a", encoding="utf-8") as file:
             file.write(json.dumps(params) + "\n")
+        if "--exit-after-call" in sys.argv:
+            sys.exit(1)
         result = {
             "content": [{"type": "text", "text": "refunded"}],
             "x0r_env": sorted(key for key in os.environ if key.startswith("X0R_")),

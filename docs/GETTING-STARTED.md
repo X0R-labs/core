@@ -159,8 +159,12 @@ For safe retries within a proxy session, send a string of 1 to 200 characters in
 arguments, the proxy checks policy again, records the decision and replays the
 stored response with the retry's request ID. Reusing the key for a different call
 is denied with `idempotency_key_reused`. A matching call still in flight is
-denied with `idempotency_in_progress`. The proxy keeps up to 1,000 completed
-responses in memory for 10 minutes, dropping the oldest first.
+denied with `idempotency_in_progress`. If the upstream outcome is unknown or the
+response body exceeds 1 MiB, a retry is denied with
+`idempotency_outcome_unknown` or `idempotency_result_too_large`, respectively.
+The proxy keeps replay entries for up to 10 minutes, evicting the oldest first
+to stay within 1,000 entries and 32 MiB of stored JSON bodies. Replay memory
+lives in the proxy process. Restarting the proxy forgets the keys.
 
 ## Releasing
 

@@ -488,7 +488,7 @@ Each decision becomes a `policy_decisions` row:
 Read the log with `GET /v1/policy/decisions`. You can filter by `allowed`, `run_id` or
 `tool_call_id`.
 
-`POLICY_VERSION` is `"3"` (it went to 3 when `enum`, `const` and the keyword allowlist were added). If the meaning of a decision ever changes, the version goes up,
+`POLICY_VERSION` is `"4"`. If the meaning of a decision ever changes, the version goes up,
 so old records stay understandable.
 
 

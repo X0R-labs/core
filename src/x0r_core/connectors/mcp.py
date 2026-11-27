@@ -49,6 +49,8 @@ SINK_TIMEOUT = 10
 SHUTDOWN_TIMEOUT = 2
 REPLAY_TTL = 600
 REPLAY_LIMIT = 1000
+REPLAY_MAX_BYTES = 32 * 1024 * 1024
+REPLAY_MAX_BODY_BYTES = 1024 * 1024
 SSE_LINE_END = re.compile(rb"[\r\n]")
 RESOURCE_METHODS = {"resources/list", "resources/read", "resources/templates/list"}
 PROMPT_METHODS = {"prompts/list", "prompts/get"}
@@ -78,17 +80,30 @@ class Replay:
     fingerprint: bytes
     caller: str | None = None
     completed_at: float = 0
-    body: dict | None = None
+    body: bytes | None = None
+    denial: str = "idempotency_in_progress"
+
+
+def normalize_numbers(value: object) -> object:
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, list):
+        return [normalize_numbers(item) for item in value]
+    if isinstance(value, dict):
+        return {key: normalize_numbers(item) for key, item in value.items()}
+    return value
 
 
 def call_key(message: dict) -> tuple[str, bytes] | None:
     params = message.get("params")
     meta = params.get("_meta") if isinstance(params, dict) else None
-    key = meta.get("idempotencyKey") if isinstance(meta, dict) else None
-    if not isinstance(key, str) or not 1 <= len(key) <= 200:
+    if not isinstance(meta, dict) or "idempotencyKey" not in meta:
         return None
+    key = meta["idempotencyKey"]
+    if not isinstance(key, str) or not 1 <= len(key) <= 200:
+        raise ValueError("invalid_idempotency_key")
     canonical = json.dumps(
-        [params.get("name"), params.get("arguments", {})],
+        [params.get("name"), normalize_numbers(params.get("arguments", {}))],
         sort_keys=True, separators=(",", ":"),
     ).encode("ascii")
     return key, hashlib.sha256(canonical).digest()
@@ -224,8 +239,13 @@ class HttpUpstream:
                    "Content-Type": "application/json"}
         if self.token is not None:
             headers["Authorization"] = f"Bearer {self.token}"
-        async with httpx.AsyncClient(headers=headers, trust_env=False, timeout=30) as client:
+        timeout = httpx.Timeout(30, read=None)
+        async with httpx.AsyncClient(headers=headers, trust_env=False, timeout=timeout) as client:
             yield HttpConnection(client, self.url)
+
+
+class UpstreamRequestError(ValueError):
+    pass
 
 
 class HttpConnection:
@@ -237,16 +257,22 @@ class HttpConnection:
 
     async def post(self, message: dict):
         headers = {}
-        if self.session_id is not None:
-            headers["Mcp-Session-Id"] = self.session_id
+        session_id = self.session_id
+        if session_id is not None:
+            headers["Mcp-Session-Id"] = session_id
         if self.protocol_version is not None:
             headers["MCP-Protocol-Version"] = self.protocol_version
         method = message.get("method")
         expects_reply = method is not None and "id" in message
+        matched = False
         try:
             async with self.client.stream(
                 "POST", self.url, headers=headers, content=encode(message),
             ) as response:
+                if response.status_code == 404 and session_id is not None:
+                    if self.session_id == session_id:
+                        self.session_id = None
+                    raise UpstreamRequestError("session expired; initialize again")
                 response.raise_for_status()
                 if not expects_reply and response.status_code == 202:
                     return
@@ -256,20 +282,28 @@ class HttpConnection:
                     if "method" in reply:
                         yield reply
                         continue
-                    if "id" not in reply or reply["id"] != message["id"]:
+                    if matched or "id" not in reply or reply["id"] != message["id"]:
                         raise ValueError("unexpected JSON-RPC response id from HTTP upstream")
                     if method == "initialize" and isinstance(reply.get("result"), dict):
                         self.session_id = response.headers.get("Mcp-Session-Id")
                         version = reply["result"].get("protocolVersion")
                         if isinstance(version, str):
                             self.protocol_version = version
+                    matched = True
                     yield reply
-                    return
         except httpx.HTTPStatusError as exc:
-            raise ValueError(f"HTTP upstream returned status {exc.response.status_code}") from exc
+            raise UpstreamRequestError(f"HTTP {exc.response.status_code}") from exc
+        except httpx.TimeoutException as exc:
+            raise UpstreamRequestError("timeout") from exc
         except httpx.HTTPError as exc:
-            raise ValueError("HTTP upstream connection failed") from exc
-        raise ValueError("HTTP upstream closed without a JSON-RPC response")
+            raise UpstreamRequestError("connection failed") from exc
+        except UpstreamRequestError:
+            raise
+        except (ValueError, RecursionError) as exc:
+            reason = str(exc) if type(exc) is ValueError else "invalid JSON-RPC response"
+            raise UpstreamRequestError(reason) from exc
+        if not matched:
+            raise UpstreamRequestError("connection closed without a JSON-RPC response")
 
 
 async def http_messages(response: httpx.Response):
@@ -363,6 +397,7 @@ class Proxy:
         self.tools_generation = 0
         self.pending: dict[str | int | None, ToolListing | None] = {}
         self.replays: OrderedDict[str, Replay] = OrderedDict()
+        self.replay_bytes = 0
         self.in_flight: dict[str, Replay] = {}
         self.call_keys: dict[str | int | None, str] = {}
 
@@ -378,6 +413,7 @@ class Proxy:
 
     async def decide(
         self, message: dict, keyed: tuple[str, Replay] | None = None,
+        *, invalid_key: bool = False,
     ) -> Decision:
         params = message.get("params")
         params = params if isinstance(params, dict) else {}
@@ -392,7 +428,9 @@ class Proxy:
         except CallerTokenError as exc:
             decision = Decision(False, exc.reason)
         else:
-            if name is None or "id" not in message:
+            if invalid_key:
+                decision = Decision(False, "invalid_idempotency_key")
+            elif name is None or "id" not in message:
                 decision = Decision(False, "invalid_request")
             elif message["id"] in self.pending:
                 decision = Decision(False, "duplicate_request_id")
@@ -414,12 +452,12 @@ class Proxy:
                         if (existing.fingerprint != attempt.fingerprint
                                 or existing.caller != attempt.caller):
                             decision = Decision(False, "idempotency_key_reused")
+                        elif existing.body is None:
+                            if decision.allowed or key in self.replays:
+                                decision = Decision(False, existing.denial)
                         elif decision.allowed:
-                            if existing.body is None:
-                                decision = Decision(False, "idempotency_in_progress")
-                            else:
-                                attempt.body = existing.body
-                                decision = Decision(True, "idempotency_replayed")
+                            attempt.body = existing.body
+                            decision = Decision(True, "idempotency_replayed")
         record = DecisionRecord(
             tool=name or "(missing tool name)", tool_call_id=call_id,
             allowed=decision.allowed, reason=decision.reason,
@@ -438,7 +476,41 @@ class Proxy:
                 return Decision(False, "decision_not_recorded")
         return decision
 
+    def drop_oldest_replay(self) -> None:
+        _, attempt = self.replays.popitem(last=False)
+        if attempt.body is not None:
+            self.replay_bytes -= len(attempt.body)
+
+    def expire_replays(self) -> None:
+        now = monotonic()
+        while self.replays:
+            oldest = next(iter(self.replays.values()))
+            if now - oldest.completed_at < REPLAY_TTL:
+                break
+            self.drop_oldest_replay()
+
+    def finish_call(self, request_id: str | int | None, response: dict | None = None) -> None:
+        key = self.call_keys.pop(request_id, None)
+        if key is None:
+            return
+        attempt = self.in_flight.pop(key)
+        attempt.denial = "idempotency_outcome_unknown"
+        # JSON-RPC errors are upstream outcomes too. Retrying may repeat a side effect.
+        if response is not None and (("result" in response) != ("error" in response)):
+            field = "result" if "result" in response else "error"
+            body = encode({field: response[field]}).rstrip(b"\n")
+            if len(body) <= REPLAY_MAX_BODY_BYTES:
+                attempt.body = body
+                self.replay_bytes += len(body)
+            else:
+                attempt.denial = "idempotency_result_too_large"
+        attempt.completed_at = monotonic()
+        self.replays[key] = attempt
+        while len(self.replays) > REPLAY_LIMIT or self.replay_bytes > REPLAY_MAX_BYTES:
+            self.drop_oldest_replay()
+
     async def accept_client(self, message: dict) -> bool:
+        self.expire_replays()
         method = message.get("method")
         if method is None:
             return True
@@ -448,15 +520,14 @@ class Proxy:
             print(f"mcp-proxy: dropped client notification {method!r}", file=sys.stderr)
             return False
         if method == "tools/call":
-            now = monotonic()
-            while self.replays:
-                oldest = next(iter(self.replays.values()))
-                if now - oldest.completed_at < REPLAY_TTL:
-                    break
-                self.replays.popitem(last=False)
-            identity = call_key(message)
-            keyed = (identity[0], Replay(identity[1])) if identity is not None else None
-            decision = await self.decide(message, keyed)
+            try:
+                identity = call_key(message)
+            except ValueError:
+                keyed = None
+                decision = await self.decide(message, invalid_key=True)
+            else:
+                keyed = (identity[0], Replay(identity[1])) if identity is not None else None
+                decision = await self.decide(message, keyed)
             if not decision.allowed:
                 reply(message, result={
                     "content": [{"type": "text", "text": f"Denied by policy: {decision.reason}"}],
@@ -466,7 +537,7 @@ class Proxy:
             if keyed is not None:
                 key, attempt = keyed
                 if attempt.body is not None:
-                    reply(message, **attempt.body)
+                    reply(message, **json.loads(attempt.body))
                     return False
                 self.in_flight[key] = attempt
                 self.call_keys[message["id"]] = key
@@ -490,6 +561,7 @@ class Proxy:
         return True
 
     def accept_server(self, message: dict) -> dict | None:
+        self.expire_replays()
         if "method" in message:
             method = message["method"]
             if "id" in message:
@@ -504,20 +576,13 @@ class Proxy:
         elif "id" in message:
             request_id = message["id"]
             listing = self.pending.pop(request_id, None)
-            key = self.call_keys.pop(request_id, None)
-            if key is not None:
-                attempt = self.in_flight.pop(key)
-                # JSON-RPC errors are upstream outcomes too. Retrying them may repeat a side effect.
-                body = {field: message[field] for field in ("result", "error") if field in message}
-                if len(body) == 1:
-                    attempt.body = body
-                    attempt.completed_at = monotonic()
-                    self.replays[key] = attempt
-                    if len(self.replays) > REPLAY_LIMIT:
-                        self.replays.popitem(last=False)
+            self.finish_call(request_id, message)
             if listing is not None and "result" in message:
                 result = message["result"]
-                entries = tool_entries(result)
+                try:
+                    entries = tool_entries(result)
+                except ValueError as exc:
+                    raise UpstreamRequestError(str(exc)) from exc
                 current = listing.generation == self.tools_generation
                 if current and listing.first_page:
                     self.tools.clear()
@@ -538,14 +603,30 @@ class Proxy:
 
     async def run_http(self, upstream: HttpUpstream) -> int:
         async with upstream.connect() as connection, client_reader() as readline:
-            async def exchange(message: dict):
-                async with aclosing(connection.post(message)) as replies:
-                    async for response in replies:
-                        error = self.accept_server(response)
-                        if error is not None:
-                            async with aclosing(connection.post(error)) as acknowledgments:
-                                async for _ in acknowledgments:
-                                    pass
+            async def exchange(message: dict, initialized: asyncio.Event | None = None):
+                awaiting_reply = "id" in message and "method" in message
+                try:
+                    async with aclosing(connection.post(message)) as replies:
+                        async for response in replies:
+                            error = self.accept_server(response)
+                            if "method" not in response:
+                                awaiting_reply = False
+                                if initialized is not None:
+                                    initialized.set()
+                            if error is not None:
+                                await exchange(error)
+                except UpstreamRequestError as exc:
+                    self.expire_replays()
+                    if awaiting_reply:
+                        request_id = message["id"]
+                        self.pending.pop(request_id, None)
+                        self.finish_call(request_id)
+                        reply(message, error={
+                            "code": -32000, "message": f"Upstream request failed: {exc}",
+                        })
+                finally:
+                    if initialized is not None:
+                        initialized.set()
 
             reading = asyncio.create_task(readline())
             active = {reading}
@@ -559,7 +640,11 @@ class Proxy:
                     if reading in done and (line := reading.result()):
                         message = decode(line)
                         if await self.accept_client(message):
-                            if message.get("method") == "initialize" or "id" not in message:
+                            if message.get("method") == "initialize":
+                                initialized = asyncio.Event()
+                                active.add(asyncio.create_task(exchange(message, initialized)))
+                                await initialized.wait()
+                            elif "id" not in message:
                                 await exchange(message)
                             else:
                                 active.add(asyncio.create_task(exchange(message)))
@@ -603,6 +688,9 @@ class Proxy:
                 for task in (requests, responses):
                     task.cancel()
                 await asyncio.gather(requests, responses, return_exceptions=True)
+                for request_id in list(self.call_keys):
+                    self.pending.pop(request_id, None)
+                    self.finish_call(request_id)
 
 
 @asynccontextmanager
