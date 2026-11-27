@@ -1,6 +1,6 @@
 # Phase 4 plan: connectors, shared policy, trustworthy log
 
-4a through 4c are done. 4d through 4h are planned. This plan breaks
+4a through 4d are done. 4e through 4h are planned. This plan breaks
 phase 4 of [GATEWAY-PLAN.md](GATEWAY-PLAN.md) into pieces that can land as separate pull
 requests.
 
@@ -31,7 +31,7 @@ flowchart LR
 | 4a (done) | Signed caller identity | Every connector crosses a hop. The caller must arrive in a form a proxy can trust | S |
 | 4b (done) | Policy as a file, decision sink | One policy for Core, SDK and connectors, and one place to see every decision | M |
 | 4c (done) | MCP guard proxy | Checks at the moment a tool actually runs. Works with any MCP client | M |
-| 4d | LiteLLM connector | For teams that already route through LiteLLM | S |
+| 4d | LiteLLM connector (done) | For teams that already route through LiteLLM | S |
 | 4e | Hash-chained decision log | Makes edits and deletions detectable | S |
 | 4f | Retention and redaction | What buyers ask about once the log holds real data | S |
 | 4g | Key control | Uses the LiteLLM gateway and MCP proxy to check calls from managed devices | M |
@@ -170,8 +170,9 @@ Follow-ups
   LiteLLM. If its hook API changes, only this module changes.
 - Pinned to the LiteLLM versions we test, with a CI job for each.
 
-Done when: a LiteLLM proxy config with our guardrail blocks a denied call end to end,
-and decisions reach the sink.
+Implemented in the LiteLLM guardrail, with an [example proxy config](../examples/litellm/config.yaml)
+and a CI matrix for LiteLLM 1.110.4 and 1.111.0. The hook tests exercise denial and
+decision recording using LiteLLM chat responses.
 
 ### 4e. Hash-chained decision log
 

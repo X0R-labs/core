@@ -92,3 +92,27 @@ jobs:
           done
           docker logs x0r-core
           exit 1
+
+  litellm:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        litellm: ["1.110.4", "1.111.0"]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        run: pip install -e packages/x0r-guard -e ".[dev,litellm]" "litellm==${{ matrix.litellm }}"
+
+      - name: Test
+        run: pytest -q tests/test_litellm_guardrail.py
+        env:
+          LITELLM_LOCAL_MODEL_COST_MAP: "True"

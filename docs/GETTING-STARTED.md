@@ -166,6 +166,38 @@ The proxy keeps replay entries for up to 10 minutes, evicting the oldest first
 to stay within 1,000 entries and 32 MiB of stored JSON bodies. Replay memory
 lives in the proxy process. Restarting the proxy forgets the keys.
 
+## Teams using LiteLLM
+
+Install the connector and the LiteLLM proxy dependencies in the gateway environment.
+From this checkout:
+
+```bash
+pip install ./packages/x0r-guard '.[litellm]' 'litellm[proxy]'
+export X0R_POLICY_FILE="$PWD/examples/policy.toml"
+export X0R_DECISION_LOG="$PWD/litellm-decisions.jsonl"
+litellm --config examples/litellm/config.yaml
+```
+
+Set `OPENAI_API_KEY` and `LITELLM_MASTER_KEY` before starting the gateway. Use
+`orders-chat` as the model and send your tool definitions in `tools`. The example
+enables the guardrail by default for both hooks. It rejects streaming and legacy
+`functions` requests before the provider call, then checks each returned chat tool
+call against the request schemas and the TOML policy.
+
+Set `X0R_CALLER_KEY` to the base64url audience verification key and send the signed
+token in the `x-x0r-caller` HTTP header. Issue tokens for the `litellm` audience,
+or configure `X0R_CALLER_AUDIENCE` and issue tokens for that audience. Requests
+without a header have no caller identity. An invalid token denies every tool call
+in the reply. See [Caller tokens](CALLER-TOKENS.md) for key and token setup.
+
+The default `on_denied: raise` returns HTTP 400 with denied tool names and reasons.
+Set `on_denied: remove` to return the reply with denied calls removed. Each decision
+is recorded with source `litellm` and the policy digest. Configure a JSON Lines log
+with `X0R_DECISION_LOG`, a Core sink with `X0R_CORE_URL` and `X0R_API_KEY`, or both.
+A sink failure withholds the reply. The corresponding `litellm_params` settings are
+`policy_file`, `on_denied`, `caller_key`, `audience`, `decision_log`, `core_url`, and
+`api_key`. Explicit settings take precedence over the environment.
+
 ## Releasing
 
 1. In GitHub, create the `pypi` environment under **Settings → Environments**.

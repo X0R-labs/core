@@ -1,0 +1,16 @@
+model_list:
+  - model_name: orders-chat
+    litellm_params:
+      model: openai/gpt-4o-mini
+      api_key: os.environ/OPENAI_API_KEY
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+
+guardrails:
+  - guardrail_name: x0r-tool-calls
+    litellm_params:
+      guardrail: x0r_core.connectors.litellm.X0RGuardrail
+      mode: [pre_call, post_call]
+      default_on: true
+      on_denied: raise

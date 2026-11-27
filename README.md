@@ -15,7 +15,7 @@ X0R checks what AI agents are allowed to do before they do it.
 | SDK `wrap()` | Tool calls returned to your Python app by an OpenAI-compatible client | Available |
 | Core API | Tool calls in agents run by your self-hosted Core server | Available |
 | MCP proxy | Tool calls sent to MCP servers | In progress |
-| LiteLLM gateway | Tool calls in model replies routed through LiteLLM | Planned |
+| LiteLLM gateway | Tool calls in model replies routed through LiteLLM | Available |
 
 Core also handles document ingestion and search, run transcripts, token usage, and evals. See [Internals](docs/INTERNALS.md).
 
@@ -62,7 +62,7 @@ See the [Phase 4 plan](docs/PHASE-4-PLAN.md).
 - [x] 4b. Policy files and shared decision log
 - [x] 4c. MCP guard proxy (follow-ups include standalone HTTP GET events, per-request
   caller tokens and a security-demo scenario)
-- [ ] 4d. LiteLLM connector (planned)
+- [x] 4d. [LiteLLM connector](docs/GETTING-STARTED.md#teams-using-litellm)
 - [ ] 4e. Hash-chained decision log (planned)
 - [ ] 4f. Retention and redaction (planned)
 - [ ] 4g. Key control (planned)
