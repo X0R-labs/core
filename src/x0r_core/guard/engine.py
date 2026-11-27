@@ -99,6 +99,10 @@ def check_arguments(parameters: dict[str, Any], arguments: dict[str, Any]) -> st
     return None
 
 
+def _is_text(value: object) -> bool:
+    return isinstance(value, (str, bytes, bytearray))
+
+
 def check_action(
     request: ActionRequest,
     *,
@@ -109,15 +113,17 @@ def check_action(
     """Decide one action. ``context`` is passed unchanged to the tool's ``authorize`` hook."""
     if request.workspace_id != request.agent_workspace_id:
         return Decision(False, "workspace_mismatch")
-    if request.tool_name not in request.agent_tools:
+    # A plain string is a Collection too, and "in" would match substrings: deny it.
+    if _is_text(request.agent_tools) or request.tool_name not in request.agent_tools:
         return Decision(False, "not_granted_to_agent")
-    if request.tool_name not in operator_tools:
+    if _is_text(operator_tools) or request.tool_name not in operator_tools:
         return Decision(False, "not_granted_by_operator")
     arguments = request.arguments
     if not isinstance(arguments, dict):
         return Decision(False, "invalid_arguments")
     tool = tools.get(request.tool_name)
-    if tool is None:
+    # The policy found must be for the tool asked for, not another tool's rules.
+    if tool is None or getattr(tool, "name", None) != request.tool_name:
         return Decision(False, "unknown_tool")
     reason = check_arguments(tool.parameters, arguments)
     if reason is not None:

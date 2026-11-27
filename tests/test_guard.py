@@ -53,6 +53,21 @@ def test_checks_run_in_order():
     assert _check(_request(), tools={}).reason == "unknown_tool"
 
 
+def test_string_grant_lists_are_denied():
+    # "fund" is a substring of "refund"; a string must never act as a list of grants.
+    fund = Spec(name="fund", parameters=REFUND.parameters)
+    request = _request(tool_name="fund", agent_tools="refund")
+    tools = {"fund": fund}
+    assert _check(request, operator_tools={"fund"}, tools=tools).reason == "not_granted_to_agent"
+    request = _request(tool_name="fund", agent_tools=["fund"])
+    assert _check(request, operator_tools="refund", tools=tools).reason == "not_granted_by_operator"
+
+
+def test_policy_for_another_tool_is_denied():
+    other = Spec(name="calculator", parameters=REFUND.parameters)
+    assert _check(_request(), tools={"refund": other}).reason == "unknown_tool"
+
+
 def test_schema_limits_apply():
     for amount in (500, float("nan"), float("inf"), True):
         args = {"order_id": "A1", "amount": amount}
