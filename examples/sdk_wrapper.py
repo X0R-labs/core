@@ -2,14 +2,18 @@
 
     pip install -e . openai
     python examples/sdk_wrapper.py            # offline: a fake model asks for a refund
-    OPENAI_API_KEY=sk-... python examples/sdk_wrapper.py --live
+    python examples/sdk_wrapper.py --play     # type requests yourself and watch the guard
+    OPENAI_API_KEY=sk-... python examples/sdk_wrapper.py --play --live
 
-A support agent may look up orders and refund small amounts, but only on the
-caller's own orders. Everything else is denied before your code runs it.
+A support agent may look up orders and refund up to 50, but only on the caller's
+own orders (A-1 and A-2). Everything else is denied before your code runs it.
+Offline, a tiny fake model turns your words into a tool call: it looks for an
+order id like A-1 and an amount like 20.
 """
 from __future__ import annotations
 
 import json
+import re
 import sys
 
 import httpx
@@ -65,29 +69,39 @@ POLICY = Policy(
 )
 
 
+def fake_call(text: str) -> tuple[str, dict]:
+    """A stand-in for the model: pick a tool and arguments from plain words."""
+    order = re.search(r"\b([A-Za-z]-\d+)\b", text)
+    amount = re.search(r"(?<![\w-])\$?(\d+(?:\.\d+)?)\b", text)
+    args: dict = {"order_id": order.group(1).upper() if order else "A-1"}
+    if "refund" in text.lower():
+        args["amount"] = float(amount.group(1)) if amount else 10
+        return "refund_order", args
+    return "lookup_order", args
+
+
 def fake_model() -> httpx.Client:
-    """Stands in for the model: it asks to refund someone else's order."""
-    reply = {
-        "id": "chatcmpl-demo", "object": "chat.completion", "created": 0, "model": "demo",
-        "choices": [{"index": 0, "finish_reason": "tool_calls", "message": {
-            "role": "assistant", "content": None,
-            "tool_calls": [{"id": "call_1", "type": "function", "function": {
-                "name": "refund_order", "arguments": '{"order_id": "B-77", "amount": 900}'}}],
-        }}],
-    }
-    return httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, json=reply)))
+    def answer(request: httpx.Request) -> httpx.Response:
+        messages = json.loads(request.content)["messages"]
+        name, args = fake_call(messages[-1]["content"])
+        return httpx.Response(200, json={
+            "id": "chatcmpl-demo", "object": "chat.completion", "created": 0, "model": "demo",
+            "choices": [{"index": 0, "finish_reason": "tool_calls", "message": {
+                "role": "assistant", "content": None,
+                "tool_calls": [{"id": "call_1", "type": "function", "function": {
+                    "name": name, "arguments": json.dumps(args)}}],
+            }}],
+        })
+    return httpx.Client(transport=httpx.MockTransport(answer))
 
 
-def main() -> None:
-    live = "--live" in sys.argv
-    inner = OpenAI() if live else OpenAI(api_key="offline", base_url="http://demo.local/v1",
-                                         http_client=fake_model())
-    client = wrap(inner, POLICY)
+def ask(client, text: str) -> None:
     caller = Caller("user-42", {"orders": "A-1,A-2"})
     try:
         reply = client.chat.completions.create(
             model="gpt-4o-mini",
-            messages=[{"role": "user", "content": "Refund order B-77 in full."}],
+            messages=[{"role": "system", "content": "You are a support agent. Use the tools."},
+                      {"role": "user", "content": text}],
             tools=TOOLS,
             x0r_caller=caller,
         )
@@ -98,6 +112,22 @@ def main() -> None:
         print("allowed, run it now:", call.function.name, call.function.arguments)
     if reply.choices[0].message.content:
         print("answer:", reply.choices[0].message.content)
+
+
+def main() -> None:
+    live = "--live" in sys.argv
+    inner = OpenAI() if live else OpenAI(api_key="offline", base_url="http://demo.local/v1",
+                                         http_client=fake_model())
+    client = wrap(inner, POLICY)
+    if "--play" not in sys.argv:
+        ask(client, "Refund order B-77 for 900.")
+        return
+    print("You are user-42 and own orders A-1 and A-2. Refunds over 50 are blocked.")
+    print("Try: look up A-1 / refund A-1 for 20 / refund A-1 for 900 / refund B-77 for 5")
+    print("Empty line to quit.\n")
+    while text := input("> ").strip():
+        ask(client, text)
+        print()
 
 
 if __name__ == "__main__":
