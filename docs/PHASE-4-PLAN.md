@@ -231,7 +231,8 @@ The rules from GATEWAY-PLAN.md still hold. In addition:
 - A decision change bumps `POLICY_VERSION`. A policy file change bumps only
   `policy_revision`.
 - Each connector fails closed. If it can't check something, it refuses it.
-- Connectors are extras. A plain `pip install x0r-core` gets no new dependencies.
+- Connectors are extras. A plain `pip install x0r-core` gets only `x0r-guard` added
+  (standard library only), and no connector dependencies.
 - `x0r security-demo` gets a connector scenario once 4c lands.
 
 ## Decisions
