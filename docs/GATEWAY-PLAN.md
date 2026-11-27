@@ -1,6 +1,6 @@
 # Direction: X0R Guard
 
-Status: plan. Phases 1, 2 and 3a are implemented; later phases are proposals, not shipped behavior.
+Status: plan. Phases 1 to 3b are implemented; later phases are proposals, not shipped behavior.
 
 ## The idea
 
@@ -29,7 +29,7 @@ Connectors are thin adapters that find tool calls wherever they appear and ask t
                                 │
      ┌──────────────┬───────────┴──────┬─────────────────┐
   Core agents   Python SDK wrapper  LiteLLM connector   MCP proxy
-  (today)       (phase 3)           (phase 4)           (phase 4)
+  (today)       (today)             (phase 4)           (phase 4)
 ```
 
 - Same rules everywhere: a policy written once applies in every connector.
@@ -43,7 +43,7 @@ Connectors are thin adapters that find tool calls wherever they appear and ask t
 | 1 | Schema-driven tool policy (custom tools supported); append-only `policy_decisions` log with `GET /v1/policy/decisions` | Implemented |
 | 2 | Guard extracted to `x0r_core.guard`: standard library only, no imports from tools, models, providers or the web app. `x0r_core.policy.authorize_tool` stays as a wrapper | Implemented |
 | 3a | Caller identity on runs (subject and attributes, vouched for by the API key) passed to tool rules; decision committed before the tool runs; decision linked to the tool-call ID | Implemented |
-| 3b | Python SDK wrapper that checks tool calls returned by any OpenAI-compatible client before the app runs them | Proposed |
+| 3b | Python SDK wrapper (`x0r_core.guard.wrap`) that checks tool calls returned by any OpenAI-compatible client before the app runs them. See [SDK.md](SDK.md) | Implemented |
 | 4 | Connectors driven by the first customers: LiteLLM guardrail hook, MCP proxy in front of tool servers, with signed caller identity across the hop. Per-workspace policy, retention and redaction controls, tamper-evident decision log | Proposed |
 
 Each phase lands as its own pull request with tests and keeps the existing API working.

@@ -31,7 +31,7 @@ async def test_granted_decision_is_recorded(client):
     assert row["tool"] == "knowledge_search"
     assert row["allowed"] is True
     assert row["reason"] == "granted"
-    assert row["policy_version"] == "2"
+    assert row["policy_version"] == "3"
     assert "arguments" not in row
 
 

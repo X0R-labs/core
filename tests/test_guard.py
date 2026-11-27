@@ -144,3 +144,35 @@ def test_guard_imports_only_the_standard_library():
     assert {"x0r_core.guard", "x0r_core.guard.engine"} <= set(ours)
     assert all(m == "x0r_core" or m.startswith("x0r_core.guard") for m in ours)
     assert outside == []
+
+
+@pytest.mark.parametrize("spec,value,ok", [
+    ({"type": "string", "enum": ["a", "b"]}, "a", True),
+    ({"type": "string", "enum": ["a", "b"]}, "c", False),
+    ({"type": "integer", "enum": [1, 2]}, True, False),
+    ({"type": "string", "const": "x"}, "x", True),
+    ({"type": "string", "const": "x"}, "y", False),
+    ({"type": "string", "pattern": "^a"}, "abc", False),
+    ({"type": "number", "exclusiveMaximum": 10}, 1, False),
+    ({"type": "string", "format": "email"}, "a@b.c", False),
+    ({"type": "string", "$dynamicRef": "#x"}, "a", False),
+    ({"type": "number", "const": 1}, 1.0, True),
+    ({"type": "number", "enum": [1.5, 2]}, 2.0, True),
+    ({"type": "boolean", "const": True}, 1, False),
+])
+def test_enum_const_and_unsupported_keywords(spec, value, ok):
+    from x0r_core.guard.engine import check_arguments
+
+    parameters = {"type": "object", "properties": {"v": spec}, "required": ["v"]}
+    assert (check_arguments(parameters, {"v": value}) is None) is ok
+
+
+@pytest.mark.parametrize("root", [
+    {"type": "object", "properties": {"v": {"type": "string"}}, "minProperties": 2},
+    {"type": "object", "properties": {"v": {"type": "string"}}, "anyOf": [{}]},
+    {"type": "array", "properties": {"v": {"type": "string"}}},
+])
+def test_root_keywords_outside_the_allowlist_deny(root):
+    from x0r_core.guard.engine import check_arguments
+
+    assert check_arguments(root, {"v": "a"}) == "invalid_arguments"
