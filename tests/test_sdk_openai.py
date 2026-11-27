@@ -145,3 +145,30 @@ def test_parse_validator_that_changes_a_value_is_denied():
                                              on_decision=records.append))
         client.chat.completions.parse(model="m", messages=[], tools=[tool])
         assert records[-1].reason == reason
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("look up A-1", ("lookup_order", {"order_id": "A-1"})),
+    ("refund A-1 for 20", ("refund_order", {"order_id": "A-1", "amount": 20.0})),
+    ("refund A-1 for $1,000", ("refund_order", {"order_id": "A-1", "amount": 1000.0})),
+    ("order 3 items: refund A-1 for 7", ("refund_order", {"order_id": "A-1", "amount": 7.0})),
+    ("refund A-1 for -5", ("refund_order", {"order_id": "A-1", "amount": -5.0})),
+    ("refund A-1", str),
+    ("refund it for 20", str),
+    ("don't refund A-1 for 20", str),
+    ("delete A-1", str),
+    ("refund A-1 or A-2 for 5", str),
+])
+def test_playground_fake_model_never_invents_arguments(text, expected):
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).parents[1] / "examples" / "sdk_wrapper.py"
+    spec = importlib.util.spec_from_file_location("sdk_wrapper_example", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    result = module.fake_call(text)
+    if expected is str:
+        assert isinstance(result, str)
+    else:
+        assert result == expected

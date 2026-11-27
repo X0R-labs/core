@@ -20,7 +20,8 @@ reply = client.chat.completions.create(
 ```
 
 A full, runnable example is in [`examples/sdk_wrapper.py`](../examples/sdk_wrapper.py). It
-runs offline by default, and with `--live` it uses your `OPENAI_API_KEY`.
+runs offline by default. Add `--play` to type requests yourself and watch the guard allow or
+block them, and `--live` to use a real model with your `OPENAI_API_KEY`.
 
 ## How it works
 
