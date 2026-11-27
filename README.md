@@ -110,8 +110,11 @@ The full tour, with every component, table, limit and weak spot, is in
   with host/DNS checks and known connection-validation gaps (see the security model).
   Add your own ([example](examples/custom_tool.py)): every call is checked against the
   tool's declared argument schema and the operator allowlist before it runs.
-- **Policy decision log** — every tool authorization, allowed or denied, with its reason,
-  caller and tool-call id, saved before the tool runs, at `GET /v1/policy/decisions`.
+- **Workspace policy** — upload a versioned TOML policy with `PUT /v1/policy` and
+  read the current revision with `GET /v1/policy`.
+- **Policy decision log** — read Core and SDK authorizations with
+  `GET /v1/policy/decisions`. Send SDK decisions with `POST /v1/policy/decisions`
+  or the SDK's `core_sink` hook.
 - **Guard for your own app** — no Core server needed: `wrap(OpenAI(), Policy(...))` checks
   every tool call a model returns before your code runs it. See [docs/SDK.md](docs/SDK.md).
 - **Signed caller tokens** — carry "who this is for" to a proxy or connector that can't

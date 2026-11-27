@@ -70,8 +70,37 @@ curl -fsS http://localhost:8000/v1/workspaces \
   -d '{"name":"Acme","plan":"trial","monthly_token_quota":200000}'
 ```
 
-Set `X0R_KEY` to that API key and view the workspace's policy decisions. The log
-starts empty and fills as Core checks tool calls.
+Set `X0R_KEY` to that API key. From the repository checkout, upload the example
+workspace policy with `jq` and `curl`.
+
+```bash
+jq -Rs '{policy: .}' examples/policy.toml | curl -fsS -X PUT \
+  http://localhost:8000/v1/policy \
+  -H "Authorization: Bearer $X0R_KEY" \
+  -H "Content-Type: application/json" \
+  --data-binary @-
+```
+
+Use a file whose tool names match those in your app or Core agents. Core runs require
+the file's allowlist and rules in addition to the existing agent and operator checks.
+The response includes the digest and revision. `GET /v1/policy` returns the current file.
+Each run uses the revision that was current when it started.
+
+Use the same TOML file in your SDK app and pass the policy to `wrap()` to send its
+decisions to this workspace.
+
+```python
+import os
+
+from x0r_guard import Policy, core_sink
+
+policy = Policy.from_file(
+    "examples/policy.toml",
+    on_decision=core_sink("http://localhost:8000", os.environ["X0R_KEY"]),
+)
+```
+
+View both Core and SDK decisions in the workspace log.
 
 ```bash
 curl -fsS http://localhost:8000/v1/policy/decisions \

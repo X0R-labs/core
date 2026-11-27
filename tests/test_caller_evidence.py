@@ -225,8 +225,10 @@ async def test_init_db_upgrades_an_existing_database(tmp_path, monkeypatch):
     try:
         with engine.begin() as conn:
             conn.execute(text(
-                "CREATE TABLE policy_decisions (id INTEGER PRIMARY KEY, tool VARCHAR(120))"
+                "CREATE TABLE policy_decisions (id INTEGER PRIMARY KEY, "
+                "workspace_id VARCHAR(64), tool VARCHAR(120))"
             ))
+            conn.execute(text("INSERT INTO policy_decisions (id, tool) VALUES (1, 'old')"))
         settings = get_settings().model_copy(update={"database_url": f"sqlite+aiosqlite:///{path}"})
         monkeypatch.setattr(db, "get_settings", lambda: settings)
         monkeypatch.setattr(db, "_engine", None)
@@ -237,10 +239,17 @@ async def test_init_db_upgrades_an_existing_database(tmp_path, monkeypatch):
             await db.dispose_db()
         inspector = inspect(engine)
         columns = {c["name"] for c in inspector.get_columns("policy_decisions")}
-        assert {"tool_call_id", "caller_subject"} <= columns
-        indexes = {i["name"]: i["column_names"]
-                   for i in inspector.get_indexes("policy_decisions")}
-        assert indexes["ix_policy_decisions_tool_call_id"] == ["tool_call_id"]
+        assert {
+            "tool_call_id", "caller_subject", "policy_digest", "policy_revision", "source",
+            "decision_key", "decided_at",
+        } <= columns
+        indexes = {i["name"]: i for i in inspector.get_indexes("policy_decisions")}
+        assert indexes["ix_policy_decisions_tool_call_id"]["column_names"] == ["tool_call_id"]
+        with engine.connect() as conn:
+            assert conn.execute(text("SELECT source FROM policy_decisions")).scalar() == "core"
+        decision_key = indexes["ix_policy_decisions_workspace_decision_key"]
+        assert decision_key["column_names"] == ["workspace_id", "decision_key"]
+        assert decision_key["unique"]
     finally:
         engine.dispose()
 

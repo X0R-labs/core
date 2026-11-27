@@ -7,9 +7,15 @@ from time import perf_counter
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..guard import Caller
-from ..models import Agent, PolicyDecision, Run, Workspace
-from ..policy import POLICY_VERSION, authorize_tool, policy_tool_call_id
+from ..guard import Caller, HookContext, load_policy_text
+from ..models import Agent, PolicyDecision, Run, Workspace, utcnow
+from ..policy import (
+    POLICY_VERSION,
+    authorize_policy_file,
+    authorize_tool,
+    current_workspace_policy,
+    policy_tool_call_id,
+)
 from ..providers import Completion, Provider, Usage, build_provider
 from ..tools import ToolContext
 from ..tools import resolve as resolve_tools
@@ -46,6 +52,11 @@ async def run_agent(
     caller: Caller | None = None,
 ) -> Run:
     await usage_service.assert_within_quota(session, workspace)
+
+    stored_policy = await current_workspace_policy(session, workspace.id)
+    policy = load_policy_text(stored_policy.source.encode("utf-8")) if stored_policy else None
+    policy_digest = policy.digest if policy else None
+    policy_revision = stored_policy.revision if stored_policy else None
 
     active = provider or build_provider(agent.provider)
     tools = resolve_tools(agent.tools or [])
@@ -136,12 +147,18 @@ async def run_agent(
                     caller=caller,
                     tool_call_id=call.id,
                 )
+                if decision.allowed and policy is not None:
+                    decision = authorize_policy_file(
+                        policy, call.name, call.arguments,
+                        HookContext(caller, call.id, ctx.settings),
+                    )
                 steps.append({
                     "type": "policy", "version": POLICY_VERSION, "tool": call.name,
                     "tool_call_id": call.id,
                     "allowed": decision.allowed, "reason": decision.reason,
                     "workspace_id": workspace.id,
                     "caller_subject": caller.subject if caller else None,
+                    "policy_digest": policy_digest, "policy_revision": policy_revision,
                 })
                 session.add(PolicyDecision(
                     workspace_id=workspace.id, run_id=run.id, agent_id=agent.id,
@@ -149,7 +166,8 @@ async def run_agent(
                     tool_call_id=policy_tool_call_id(call.id) if call.id else None,
                     caller_subject=caller.subject[:200] if caller else None,
                     allowed=decision.allowed, reason=decision.reason,
-                    policy_version=POLICY_VERSION,
+                    policy_version=POLICY_VERSION, policy_digest=policy_digest,
+                    policy_revision=policy_revision, source="core", decided_at=utcnow(),
                 ))
                 # Commit before the handler runs, so the decision survives even if the
                 # process dies mid-action. This also commits the run as "running", along

@@ -4,8 +4,10 @@ from contextlib import asynccontextmanager
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _package_version
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from .api.v1 import router
 from .config import get_settings
@@ -37,6 +39,13 @@ def create_app() -> FastAPI:
         ),
         lifespan=lifespan,
     )
+    @app.exception_handler(RequestValidationError)
+    async def _validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
+        # Leave out the rejected input: it may be large, private, or not even encodable.
+        errors = [{"type": e["type"], "loc": list(e["loc"]), "msg": e["msg"]}
+                  for e in exc.errors()]
+        return JSONResponse(status_code=422, content={"detail": errors})
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[o.strip() for o in settings.cors_origins.split(",") if o.strip()],

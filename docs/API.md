@@ -101,7 +101,10 @@ If the first decision commit fails, nothing was saved and `run_id` is `null`.
 | --- | --- | --- |
 | `GET` | `/v1/runs` | `?limit=` 1–200, newest first. |
 | `GET` | `/v1/runs/{id}` | Full transcript. |
-| `GET` | `/v1/policy/decisions` | Tool authorization log, newest first. `?limit=` 1–200, `?allowed=true\|false`, `?run_id=`, `?tool_call_id=`. Each row has `tool_call_id` and `caller_subject`. No argument values. |
+| `PUT` | `/v1/policy` | Upload `{policy: "<TOML text>"}` (up to 64 KiB in UTF-8). Uploading the current file again returns the same revision. |
+| `GET` | `/v1/policy` | Current `revision`, `digest`, `policy`, and `created_at`. Returns 404 before the first upload. |
+| `POST` | `/v1/policy/decisions` | Accepts up to 100 SDK `decisions` and returns `{stored, duplicates}`. Decision UUIDs are unique per workspace. |
+| `GET` | `/v1/policy/decisions` | Tool authorization log, newest first. `?limit=` 1–200, `?allowed=true\|false`, `?run_id=`, `?tool_call_id=`. Rows include the tool-call ID, caller subject, policy digest and revision, source, decision key, and decision time. No argument values. |
 
 The `tool_call_id` filter accepts original IDs up to 4096 characters. For IDs over
 200 characters, the log stores `sha256:` plus the hex digest of the full ID. The run

@@ -31,6 +31,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Literal
+from uuid import uuid4
 
 from .engine import POLICY_VERSION, ActionRequest, Authorizer, Caller, Decision, check_action
 from .policy_file import PolicyFileError, load_policy_file
@@ -63,6 +64,7 @@ class DecisionRecord:
     policy_version: str
     decided_at: str
     policy_digest: str | None = None
+    decision_id: str = field(default_factory=lambda: str(uuid4()))
 
 
 @dataclass(frozen=True)
