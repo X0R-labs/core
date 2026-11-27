@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "x0r-core"
 version = "0.1.0"
-description = "Self-hosted AI agent backend: ingest documents, run tool-calling agents, meter every token."
+description = "Self-hosted backend for document retrieval, tool calls checked by X0R Guard, and usage metering."
 readme = "README.md"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.11"
@@ -21,6 +21,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
+    "x0r-guard>=0.1,<0.2",
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.30.0",
     "sqlalchemy[asyncio]>=2.0.30",

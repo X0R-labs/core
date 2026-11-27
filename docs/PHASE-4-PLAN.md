@@ -47,7 +47,7 @@ vouches for it (Core). Through a proxy, nothing vouches for it, so it gets signe
 - The app signs a small token, `x0r.v1.<payload>.<sig>`. The payload is base64url JSON:
   `{kid, sub, attrs, aud, iat, exp}`, and the signature is HMAC-SHA256 with a per-workspace
   secret. That's standard library only, so the guard boundary holds.
-- `x0r_core.guard.identity`: `sign_caller(caller, key_id=, secret=, audience=, ttl=)` and
+- `x0r_guard.identity`: `sign_caller(caller, key_id=, secret=, audience=, ttl=)` and
   `verify_caller(token, keys=, audience=) -> Caller`. `keys` maps key ids to secrets, so
   several can be active while keys rotate.
 - New reason codes: `caller_signature_invalid`, `caller_expired`, `caller_wrong_audience`,

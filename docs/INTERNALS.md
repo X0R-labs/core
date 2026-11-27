@@ -32,7 +32,7 @@ Think of Core as an office building:
 | --- | --- | --- |
 | Reception desk | `api/v1.py`, `deps.py` | Checks your badge (API key), finds your company (workspace), takes your request |
 | Offices | `services/` | Do the real work: store documents, search, run agents, grade them, count tokens |
-| Security guard at the tool room | `guard/` | Decides if an agent may use a tool, **before** it touches anything, and writes it down |
+| Security guard at the tool room | `x0r_guard` | Decides if an agent may use a tool, **before** it touches anything, and writes it down |
 | Tool room | `tools/` | The things an agent can do: search documents, do math, fetch a web page |
 | Phone line to the AI | `providers/` | Talks to the model: a fake offline one (mock) or any OpenAI-style API |
 | Archive | `models.py`, `db.py` | Every table, in SQLite (default) or Postgres |
@@ -74,9 +74,7 @@ src/x0r_core/
 ├── policy.py          Core's door into the guard
 ├── security_demo.py   offline demo: one denied tool call, one allowed
 ├── api/v1.py          all HTTP routes under /v1
-├── guard/engine.py    the rules (standard library only)
-├── guard/sdk.py       wrap(): the guard around any OpenAI-style client
-├── guard/identity.py  sign_caller / verify_caller: signed caller tokens
+├── guard/            compatibility imports for x0r_guard
 ├── services/
 │   ├── agents.py      the agent loop
 │   ├── ingest.py      save a document, split it, embed it
@@ -92,6 +90,11 @@ src/x0r_core/
     ├── mock.py        offline, predictable provider
     ├── openai_compat.py any OpenAI-style endpoint
     └── registry.py    picks a provider by name
+
+packages/x0r-guard/src/x0r_guard/
+├── engine.py          the rules (standard library only)
+├── sdk.py             wrap() for OpenAI-compatible clients
+└── identity.py        sign_caller / verify_caller for signed caller tokens
 ```
 
 **Who may import whom.** Arrows point at what a file uses.
@@ -99,7 +102,7 @@ src/x0r_core/
 ```mermaid
 flowchart TB
   API["api/v1.py"] --> DEPS["deps.py"] & SCH["schemas.py"] & SVC["services/*"]
-  SVC --> POL["policy.py"] --> GUARD["guard/"]
+  SVC --> POL["policy.py"] --> GUARD["x0r_guard"]
   SVC --> TOOLS["tools/"] & PROV["providers/"] & MODELS["models.py"]
   TOOLS -->|"knowledge_search"| SVC
   TOOLS --> GUARD
@@ -487,7 +490,7 @@ so old records stay understandable.
 
 ### The same guard outside Core: the SDK wrapper
 
-`guard/sdk.py` puts the guard around any OpenAI-style client, with no server:
+`x0r_guard.sdk` puts the guard around any OpenAI-style client, with no server:
 
 ```python
 client = wrap(OpenAI(), Policy(allow=["lookup_order"], on_decision=save))
@@ -725,7 +728,7 @@ customer.
 | --- | --- |
 | Add an API route | `api/v1.py`, plus shapes in `schemas.py` |
 | Change the agent loop | `services/agents.run_agent()` |
-| Add or change a guard rule for everyone | `guard/engine.check_action()`. Bump `POLICY_VERSION` if outcomes change |
+| Add or change a guard rule for everyone | `x0r_guard.engine.check_action()`. Bump `POLICY_VERSION` if outcomes change |
 | Add a rule for one tool | That tool's `authorize=` hook |
 | Add a tool | `tools/builtin.py`, or your own file like `examples/custom_tool.py` |
 | Add a model provider | `providers/`, plus `_REGISTRY` in `providers/registry.py` |
