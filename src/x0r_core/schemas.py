@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated, Any
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
 
 
 class ORMModel(BaseModel):
@@ -106,27 +106,90 @@ class AgentOut(ORMModel):
 
 
 class CallerIn(BaseModel):
-    """Who the run acts for, as asserted by the app holding the API key."""
+    """Who the run acts for, as asserted by the app holding the API key.
+
+    An attribute value is a string or a list of strings, e.g. ``{"orders": ["A-1"]}``.
+    """
 
     subject: str = Field(min_length=1, max_length=200, pattern=r"\S")
     attributes: dict[
         Annotated[str, Field(min_length=1, max_length=64)],
-        Annotated[str, Field(max_length=200)],
+        Annotated[str, Field(max_length=200)]
+        | Annotated[list[Annotated[str, Field(min_length=1, max_length=200)]],
+                    Field(max_length=100)],
     ] = Field(
         default_factory=dict, max_length=20
     )
 
     @model_validator(mode="after")
     def _no_control_characters(self) -> CallerIn:
-        values = [self.subject, *self.attributes, *self.attributes.values()]
+        values = [self.subject, *self.attributes]
+        for value in self.attributes.values():
+            values.extend(value if isinstance(value, list) else [value])
         if any(ord(ch) < 32 or ord(ch) == 127 for value in values for ch in value):
             raise ValueError("caller fields must not contain control characters")
         return self
+
+    def to_caller(self):
+        from .guard import Caller
+
+        return Caller(self.subject, {
+            k: tuple(v) if isinstance(v, list) else v for k, v in self.attributes.items()
+        })
 
 
 class RunIn(BaseModel):
     input: str = Field(min_length=1, max_length=32_000)
     caller: CallerIn | None = None
+    caller_token: str | None = Field(default=None, max_length=8192)
+
+    @model_validator(mode="after")
+    def _one_caller(self) -> RunIn:
+        if self.caller is not None and self.caller_token is not None:
+            raise ValueError("send caller or caller_token, not both")
+        return self
+
+
+CORE_AUDIENCE = "x0r-core"
+
+
+class CallerKeyIn(BaseModel):
+    name: str = Field(default="default", min_length=1, max_length=120)
+
+
+class CallerKeyOut(ORMModel):
+    id: str
+    name: str
+    created_at: datetime
+    revoked_at: datetime | None
+
+
+_AUDIENCE = Field(default=CORE_AUDIENCE, min_length=1, max_length=200, pattern=r"^[\x21-\x7e]+$")
+
+
+class VerifierKeyIn(BaseModel):
+    audience: str = _AUDIENCE
+
+
+class VerifierKeyOut(BaseModel):
+    key_id: str
+    audience: str
+    key: str = Field(
+        description="base64url. Checks (and could sign) tokens for this audience only."
+    )
+
+
+class CallerTokenIn(BaseModel):
+    caller: CallerIn
+    audience: str = _AUDIENCE
+    ttl_seconds: StrictInt = Field(default=300, ge=1, le=24 * 3600)
+
+
+class CallerTokenOut(BaseModel):
+    token: str
+    key_id: str
+    audience: str
+    expires_at: datetime
 
 
 class RunOut(ORMModel):

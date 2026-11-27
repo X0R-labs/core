@@ -1,6 +1,6 @@
 # Direction: X0R Guard
 
-Status: plan. Phases 1 to 3b are implemented; later phases are proposals, not shipped behavior.
+Status: plan. Phases 1 to 3b and 4a (signed caller tokens) are implemented; the rest of phase 4 is planned, not shipped behavior.
 
 ## The idea
 

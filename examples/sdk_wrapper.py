@@ -44,7 +44,10 @@ def own_orders_only(arguments: dict, ctx: HookContext) -> str | None:
     """Business rule: the caller may only touch their own orders."""
     if ctx.caller is None:
         return "caller_required"
-    if arguments["order_id"] not in ctx.caller.attributes.get("orders", "").split(","):
+    owned = ctx.caller.attributes.get("orders", ())
+    if isinstance(owned, str):
+        owned = tuple(owned.split(","))   # older apps send "A-1,A-2"
+    if arguments["order_id"] not in owned:
         return "not_callers_record"
     return None
 
@@ -123,7 +126,7 @@ def fake_model() -> httpx.Client:
 
 
 def ask(client, text: str) -> None:
-    caller = Caller("user-42", {"orders": "A-1,A-2"})
+    caller = Caller("user-42", {"orders": ("A-1", "A-2")})
     try:
         reply = client.chat.completions.create(
             model="gpt-4o-mini",

@@ -76,6 +76,7 @@ src/x0r_core/
 ├── api/v1.py          all HTTP routes under /v1
 ├── guard/engine.py    the rules (standard library only)
 ├── guard/sdk.py       wrap(): the guard around any OpenAI-style client
+├── guard/identity.py  sign_caller / verify_caller: signed caller tokens
 ├── services/
 │   ├── agents.py      the agent loop
 │   ├── ingest.py      save a document, split it, embed it
@@ -283,7 +284,12 @@ This is the heart of Core: `services/agents.run_agent()`, called by
 ```
 
 `caller` is optional. It says who the run acts for. Core trusts it because the API key
-already proves which app is calling, so the app vouches for its own user.
+already proves which app is calling, so the app vouches for its own user. An attribute
+value is a string or a list of strings.
+
+Instead of `caller`, the body can carry `caller_token`: a caller signed with one of the
+workspace's caller keys, for audience `x0r-core`. Core checks it before the run starts,
+and a bad one is a `401` with the reason. See [CALLER-TOKENS.md](CALLER-TOKENS.md).
 
 ### The loop
 
@@ -445,11 +451,13 @@ holding the caller. For example:
 
 ```python
 def own_order_only(arguments, ctx):
-    # The app sends: "caller": {"subject": "user-42", "attributes": {"orders": "A-1,A-7"}}
+    # The app sends: "caller": {"subject": "user-42", "attributes": {"orders": ["A-1", "A-7"]}}
     if ctx.caller is None:
         return "caller_required"
-    allowed = ctx.caller.attributes.get("orders", "").split(",")
-    if arguments["order_id"] not in allowed:
+    owned = ctx.caller.attributes.get("orders", ())
+    if isinstance(owned, str):
+        owned = (owned,)   # one order sent as a plain string; never use `in` on a string
+    if arguments["order_id"] not in owned:
         return "not_callers_record"
     return None   # None means allow
 ```
@@ -622,6 +630,7 @@ later without changing anything around it.
 ```mermaid
 erDiagram
   workspaces ||--o{ api_keys : has
+  workspaces ||--o{ caller_keys : signs
   workspaces ||--o{ documents : owns
   documents ||--o{ chunks : "split into"
   workspaces ||--o{ agents : owns
@@ -636,6 +645,7 @@ erDiagram
 | --- | --- | --- |
 | `workspaces` | `id` (`ws_…`), `name`, `plan`, `monthly_token_quota` | The tenant. Everything else points here |
 | `api_keys` | `prefix`, `key_hash` (unique), `last_used_at`, `revoked_at` | Hash only, never the key |
+| `caller_keys` | `id` (`ck_…`), `name`, `secret`, `revoked_at` | Signs caller tokens. The root secret never leaves Core; proxies get per-audience verify keys |
 | `documents` | `title`, `source`, `mime`, `content`, `meta` (JSON) | Full original text |
 | `chunks` | `document_id`, `ordinal`, `content`, `tokens`, `embedding` (JSON list) | Deleted with their document |
 | `agents` | `system_prompt`, `provider`, `model`, `tools` (JSON list), `temperature`, `max_steps` (default 6) | |

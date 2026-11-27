@@ -30,10 +30,14 @@ MAX_STRING_LENGTH = 8000
 
 @dataclass(frozen=True)
 class Caller:
-    """Who the action is for, as asserted by the authenticated app (e.g. its end user)."""
+    """Who the action is for, as asserted by the authenticated app (e.g. its end user).
+
+    Attribute values are strings or tuples of strings, e.g. ``{"orders": ("A-1", "A-2")}``.
+    A rule checks a tuple by exact membership; it never splits a string on commas.
+    """
 
     subject: str
-    attributes: Mapping[str, str] = field(default_factory=dict)
+    attributes: Mapping[str, str | tuple[str, ...]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

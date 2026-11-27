@@ -52,6 +52,23 @@ class ApiKey(Base):
         return self.revoked_at is None
 
 
+class CallerKey(Base):
+    """A secret that signs caller tokens for one workspace.
+
+    The secret is stored as is, because checking a token needs it. Treat this table like
+    the API key table: anyone who can read it can sign callers for the workspace.
+    """
+
+    __tablename__ = "caller_keys"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: new_id("ck_"))
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    name: Mapped[str] = mapped_column(String(120), default="default")
+    secret: Mapped[str] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class Document(Base):
     __tablename__ = "documents"
 

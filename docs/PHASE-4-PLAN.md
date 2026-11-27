@@ -1,6 +1,6 @@
 # Phase 4 plan: connectors, shared policy, trustworthy log
 
-Status: plan, nothing here is built yet. It breaks the phase 4 row of
+Status: in progress. 4a is implemented ([CALLER-TOKENS.md](CALLER-TOKENS.md)); the rest is planned. It breaks the phase 4 row of
 [GATEWAY-PLAN.md](GATEWAY-PLAN.md) into pieces that each land as their own pull request.
 
 ## Where we are
@@ -39,21 +39,24 @@ flowchart LR
 4a and 4b come first because both connectors need them. 4e and 4f don't depend on the
 connectors and can run in parallel with them.
 
-### 4a. Signed caller identity
+### 4a. Signed caller identity (implemented)
 
 Today the caller is trusted because the app passes it in-process (SDK) or the API key
 vouches for it (Core). Through a proxy, nothing vouches for it, so it gets signed.
 
 - The app signs a small token, `x0r.v1.<payload>.<sig>`. The payload is base64url JSON:
-  `{sub, attrs, aud, iat, exp}`, and the signature is HMAC-SHA256 with a per-workspace
+  `{kid, sub, attrs, aud, iat, exp}`, and the signature is HMAC-SHA256 with a per-workspace
   secret. That's standard library only, so the guard boundary holds.
-- `x0r_core.guard.identity`: `sign_caller(caller, secret, audience, ttl)` and
-  `verify_caller(token, secrets, audience) -> Caller`. Several active secrets are
-  accepted, so keys can rotate.
-- New reason codes: `caller_signature_invalid`, `caller_expired`, `caller_wrong_audience`.
+- `x0r_core.guard.identity`: `sign_caller(caller, key_id=, secret=, audience=, ttl=)` and
+  `verify_caller(token, keys=, audience=) -> Caller`. `keys` maps key ids to secrets, so
+  several can be active while keys rotate.
+- New reason codes: `caller_signature_invalid`, `caller_expired`, `caller_wrong_audience`,
+  `caller_token_malformed`.
   A bad token denies the call. It never falls back to "no caller".
-- Core: `POST /v1/caller-tokens` mints a token for an API key's workspace, and run
-  requests accept `caller_token` next to `caller`.
+- Core: `POST /v1/caller-keys` (create; the secret stays in Core), `/verifier` for a
+  per-audience verify key, `GET` and `DELETE` to
+  list and revoke, and `POST /v1/caller-tokens` to mint with the newest key. Run requests
+  accept `caller_token` instead of `caller`, for audience `x0r-core`.
 - Short lifetimes (5 minutes by default) and no revocation list in this phase.
 - Attribute values may be a string or a list of strings, so "owns orders A-1 and A-2" is
   `{"orders": ["A-1", "A-2"]}`. `Caller.attributes` widens to `str | tuple[str, ...]`.
@@ -230,13 +233,13 @@ The rules from GATEWAY-PLAN.md still hold. In addition:
 - Connectors are extras. A plain `pip install x0r-core` gets no new dependencies.
 - `x0r security-demo` gets a connector scenario once 4c lands.
 
-## Decisions to make before building
+## Decisions
 
-1. **Which connector first: MCP or LiteLLM?** I suggest MCP. It checks at the moment
-   the tool runs, it works with tools SMBs and agencies already use, and it doesn't need
-   them to adopt a gateway.
-2. **Proxy shape for MCP.** A local process (stdio, zero hosting) first, with hosted HTTP
-   after? I suggest yes.
-3. **Policy file format.** TOML (standard library, no new dependency) or YAML (more
-   familiar, needs PyYAML in the loader)? I suggest TOML.
-4. **First customer.** If a pilot is lined up, its stack decides 1 and 3.
+Made on 2026-11-27:
+
+1. **MCP before LiteLLM.** 4c comes before 4d.
+2. **A local stdio proxy first**, with hosted HTTP after.
+3. **TOML** for the policy file, read with `tomllib` from the standard library.
+
+Still open: if a pilot customer is lined up, their stack can change the order of the
+pieces after 4c.
