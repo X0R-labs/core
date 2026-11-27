@@ -1,15 +1,23 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
+import secrets
+import time
+from datetime import UTC, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
-from sqlalchemy import delete, func, select
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, UploadFile, status
+from sqlalchemy import delete, func, select, text, update
+from sqlalchemy.exc import IntegrityError
 
 from ..config import get_settings
 from ..deps import ApiKeyDep, SessionDep, WorkspaceDep, require_bootstrap
-from ..guard import Caller
+from ..guard import CallerTokenError, audience_key, sign_caller, token_key_id, verify_caller
 from ..models import (
     Agent,
+    CallerKey,
     Chunk,
     Document,
     EvalCase,
@@ -20,8 +28,13 @@ from ..models import (
 )
 from ..policy import policy_tool_call_id
 from ..schemas import (
+    CORE_AUDIENCE,
     AgentIn,
     AgentOut,
+    CallerKeyIn,
+    CallerKeyOut,
+    CallerTokenIn,
+    CallerTokenOut,
     DocumentIn,
     DocumentOut,
     EvalRunIn,
@@ -34,6 +47,8 @@ from ..schemas import (
     SearchIn,
     SearchOut,
     UsageOut,
+    VerifierKeyIn,
+    VerifierKeyOut,
     WorkspaceCreate,
     WorkspaceCreated,
     WorkspaceOut,
@@ -57,6 +72,201 @@ def _decision_not_saved_error(exc: agent_service.DecisionNotSaved) -> HTTPExcept
             "may already have run. Inspect GET /v1/runs/{run_id} for saved progress."
         )
     return HTTPException(status_code=503, detail={"message": message, "run_id": exc.run_id})
+
+
+# ── caller keys and tokens ──────────────────────────────────────────────────
+
+MAX_ACTIVE_CALLER_KEYS = 5
+
+
+def _server_secret() -> bytes:
+    secret = get_settings().caller_key_secret
+    if len(secret) < 32:
+        raise HTTPException(
+            status_code=503,
+            detail="Caller keys need X0R_CALLER_KEY_SECRET (at least 32 characters) on the server.",
+        )
+    return secret.encode("utf-8")
+
+
+def _root_secret(key: CallerKey) -> bytes:
+    """The key's signing root, derived from the server secret. Never stored."""
+    label = f"x0r-caller-root|{key.workspace_id}|{key.id}|{key.salt}".encode()
+    return hmac.new(_server_secret(), label, hashlib.sha256).digest()
+
+
+def _b64(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+
+async def _lock_caller_keys(session, workspace_id: str) -> None:
+    """Serialize key changes per workspace. SQLite already has a single writer."""
+    if session.get_bind().dialect.name == "postgresql":
+        await session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:k))"),
+            {"k": f"caller-keys|{workspace_id}"},
+        )
+
+
+async def _count_active(session, workspace_id: str) -> int:
+    return await session.scalar(
+        select(func.count()).select_from(CallerKey)
+        .where(CallerKey.workspace_id == workspace_id, CallerKey.revoked_at.is_(None))
+    )
+
+
+async def _active_key(session, workspace_id: str, key_id: str) -> CallerKey | None:
+    key = await session.get(CallerKey, key_id)
+    if key is None or key.workspace_id != workspace_id or key.revoked_at is not None:
+        return None
+    return key
+
+
+async def _verify_caller_token(session, workspace_id: str, token: str):
+    try:
+        key = await _active_key(session, workspace_id, token_key_id(token))
+        keys = {key.id: audience_key(_root_secret(key), CORE_AUDIENCE)} if key else {}
+        return verify_caller(token, keys=keys, audience=CORE_AUDIENCE)
+    except CallerTokenError as exc:
+        raise HTTPException(
+            status_code=401, detail={"message": str(exc), "reason": exc.reason}
+        ) from exc
+
+
+@router.post("/caller-keys", response_model=CallerKeyOut, status_code=201)
+async def create_caller_key(
+    payload: CallerKeyIn,
+    session: SessionDep,
+    workspace: WorkspaceDep,
+    idempotency_key: Annotated[str | None, Header(max_length=128)] = None,
+):
+    """Make a caller key. The first key signs at once. Later keys only verify until you
+    activate them, so you can hand their verifier keys to proxies first.
+
+    Send an ``Idempotency-Key`` header to make retries safe: the same value returns the
+    same key instead of making another.
+    """
+    _server_secret()
+    await _lock_caller_keys(session, workspace.id)
+    if idempotency_key is not None:
+        existing = await session.scalar(select(CallerKey).where(
+            CallerKey.workspace_id == workspace.id, CallerKey.request_key == idempotency_key))
+        if existing is not None:
+            return existing
+    if await _count_active(session, workspace.id) >= MAX_ACTIVE_CALLER_KEYS:
+        raise HTTPException(
+            status_code=409,
+            detail=f"At most {MAX_ACTIVE_CALLER_KEYS} active caller keys. Revoke one first.",
+        )
+    has_signing = await session.scalar(select(CallerKey.id).where(
+        CallerKey.workspace_id == workspace.id, CallerKey.signing.is_(True),
+        CallerKey.revoked_at.is_(None)))
+    key = CallerKey(workspace_id=workspace.id, name=payload.name, salt=secrets.token_hex(16),
+                    signing=has_signing is None, request_key=idempotency_key)
+    session.add(key)
+    try:
+        await session.flush()
+    except IntegrityError:
+        # The same Idempotency-Key raced in: return the key the other request made.
+        await session.rollback()
+        existing = await session.scalar(select(CallerKey).where(
+            CallerKey.workspace_id == workspace.id, CallerKey.request_key == idempotency_key))
+        if existing is None:
+            raise
+        return existing
+    # Checked again after the insert: with SQLite's single writer, a concurrent create
+    # is visible here, so the cap holds without a lock.
+    if await _count_active(session, workspace.id) > MAX_ACTIVE_CALLER_KEYS:
+        await session.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail=f"At most {MAX_ACTIVE_CALLER_KEYS} active caller keys. Revoke one first.",
+        )
+    await session.commit()
+    return key
+
+
+@router.post("/caller-keys/{key_id}/activate", response_model=CallerKeyOut)
+async def activate_caller_key(key_id: str, session: SessionDep, workspace: WorkspaceDep):
+    """Make this key the one new tokens are signed with. The others keep verifying."""
+    await _lock_caller_keys(session, workspace.id)
+    key = await _active_key(session, workspace.id, key_id)
+    if key is None:
+        raise HTTPException(status_code=404, detail="Caller key not found.")
+    await session.execute(
+        update(CallerKey).where(CallerKey.workspace_id == workspace.id, CallerKey.id != key.id)
+        .values(signing=False)
+    )
+    key.signing = True
+    await session.commit()
+    await session.refresh(key)
+    return key
+
+
+@router.post("/caller-keys/{key_id}/verifier", response_model=VerifierKeyOut)
+async def get_verifier_key(
+    key_id: str, payload: VerifierKeyIn, session: SessionDep, workspace: WorkspaceDep
+):
+    """The key a proxy uses to check tokens for one audience. It can't check or make
+    tokens for any other audience, and never for Core."""
+    if payload.audience == CORE_AUDIENCE:
+        raise HTTPException(status_code=422, detail="Core's own audience key never leaves Core.")
+    key = await _active_key(session, workspace.id, key_id)
+    if key is None:
+        raise HTTPException(status_code=404, detail="Caller key not found.")
+    return VerifierKeyOut(key_id=key.id, audience=payload.audience,
+                          key=_b64(audience_key(_root_secret(key), payload.audience)))
+
+
+@router.get("/caller-keys", response_model=list[CallerKeyOut])
+async def list_caller_keys(session: SessionDep, workspace: WorkspaceDep):
+    rows = await session.execute(
+        select(CallerKey).where(CallerKey.workspace_id == workspace.id)
+        .order_by(CallerKey.created_at.desc())
+    )
+    return list(rows.scalars())
+
+
+@router.delete("/caller-keys/{key_id}", status_code=204)
+async def revoke_caller_key(key_id: str, session: SessionDep, workspace: WorkspaceDep):
+    """Revoke a key. Core refuses its tokens for every run that starts afterwards. If it
+    was the signing key, activate another before minting more tokens."""
+    await _lock_caller_keys(session, workspace.id)
+    key = await session.get(CallerKey, key_id)
+    if key is None or key.workspace_id != workspace.id:
+        raise HTTPException(status_code=404, detail="Caller key not found.")
+    if key.revoked_at is None:
+        key.revoked_at = datetime.now(UTC)
+        key.signing = False
+        await session.commit()
+
+
+@router.post("/caller-tokens", response_model=CallerTokenOut, status_code=201)
+async def create_caller_token(
+    payload: CallerTokenIn, session: SessionDep, workspace: WorkspaceDep
+):
+    """Sign a caller with the workspace's signing key, for a proxy or connector to check."""
+    key = await session.scalar(select(CallerKey).where(
+        CallerKey.workspace_id == workspace.id, CallerKey.signing.is_(True),
+        CallerKey.revoked_at.is_(None)))
+    if key is None:
+        raise HTTPException(
+            status_code=409,
+            detail="No signing caller key. Create one, or activate one with "
+                   "POST /v1/caller-keys/{id}/activate.",
+        )
+    issued = int(time.time())
+    try:
+        token = sign_caller(
+            payload.caller.to_caller(), key_id=key.id, secret=_root_secret(key),
+            audience=payload.audience, ttl=payload.ttl_seconds, now=issued,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return CallerTokenOut(
+        token=token, key_id=key.id, audience=payload.audience,
+        expires_at=datetime.fromtimestamp(issued + payload.ttl_seconds, UTC),
+    )
 
 
 # ── workspaces ───────────────────────────────────────────────────────────────
@@ -242,10 +452,10 @@ async def run_agent(agent_id: str, payload: RunIn, session: SessionDep, workspac
         raise HTTPException(status_code=404, detail="Agent not found.")
 
     try:
-        caller = (
-            Caller(subject=payload.caller.subject, attributes=dict(payload.caller.attributes))
-            if payload.caller else None
-        )
+        if payload.caller_token is not None:
+            caller = await _verify_caller_token(session, workspace.id, payload.caller_token)
+        else:
+            caller = payload.caller.to_caller() if payload.caller else None
         run = await agent_service.run_agent(
             session, workspace, agent, payload.input, caller=caller,
         )

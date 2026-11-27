@@ -15,6 +15,13 @@ from .engine import (
     check_action,
     check_arguments,
 )
+from .identity import (
+    CallerTokenError,
+    audience_key,
+    sign_caller,
+    token_key_id,
+    verify_caller,
+)
 from .sdk import (
     DecisionNotRecorded,
     DecisionRecord,
@@ -38,6 +45,11 @@ __all__ = [
     "ToolPolicy",
     "check_action",
     "check_arguments",
+    "CallerTokenError",
+    "audience_key",
+    "token_key_id",
+    "sign_caller",
+    "verify_caller",
     "DecisionNotRecorded",
     "DecisionRecord",
     "GuardError",
