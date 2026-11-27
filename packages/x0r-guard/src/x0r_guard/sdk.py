@@ -246,116 +246,133 @@ class _Checker:
         return kwargs, caller, offered
 
     def after(self, response: Any, caller: Caller | None, offered: dict) -> Any:
-        choices = _get(response, "choices")
-        if not isinstance(choices, (list, tuple)):
-            # A raw HTTP response or anything else that isn't a completion: we can't see
-            # its tool calls, so it never reaches the app.
-            raise UnguardedCall("the reply isn't a chat completion, so it can't be checked")
+        return check_reply(response, caller, offered, self.policy)
 
-        decisions: list[DecisionRecord] = []
-        edits: list[tuple[Any, Any, list[Any], bool, bool]] = []
-        seen_ids: set[str] = set()
-        for choice in choices:
-            message = _get(choice, "message")
-            if message is None:
-                continue
-            fc = _get(message, "function_call")
-            drop_fc = False
-            if fc:
-                # Legacy single function call: never produced when tools= is used.
-                decisions.append(self._record(_get(fc, "name") or "", None,
-                                              Decision(False, "unsupported_tool_type"),
-                                              caller))
-                drop_fc = True
-            calls = list(_get(message, "tool_calls") or [])
-            kept = []
-            for call in calls:
-                decision = self._decide(call, caller, offered, seen_ids)
-                fn = _get(call, "function") or {}
-                decisions.append(self._record(_get(fn, "name") or _get(call, "type") or "",
-                                              _get(call, "id"), decision, caller))
-                if decision.allowed:
-                    kept.append(call)
-            if drop_fc or len(kept) != len(calls):
-                edits.append((choice, message, kept, drop_fc, bool(calls)))
 
-        self._save(decisions)
-        if not edits:
-            return response
-        # Remove what was denied, from the same objects that were checked.
-        for choice, message, kept, drop_fc, had_calls in edits:
-            if drop_fc:
-                _set(message, "function_call", None)
-            if had_calls:
-                _set(message, "tool_calls", kept or None)
-            if not kept and _get(choice, "finish_reason") in ("tool_calls", "function_call"):
-                _set(choice, "finish_reason", "stop")
-        if self.policy.on_denied == "raise":
-            raise ToolCallDenied([d for d in decisions if not d.allowed], decisions, response)
+def check_reply(
+    response: Any, caller: Caller | None, offered: dict[str, _OfferedTool], policy: Policy,
+    *, caller_error: str | None = None,
+) -> Any:
+    """Check and record a chat reply before releasing any tool calls."""
+    choices = _get(response, "choices")
+    if not isinstance(choices, (list, tuple)):
+        # A raw HTTP response or anything else that isn't a completion: we can't see
+        # its tool calls, so it never reaches the app.
+        raise UnguardedCall("the reply isn't a chat completion, so it can't be checked")
+
+    decisions: list[DecisionRecord] = []
+    edits: list[tuple[Any, Any, list[Any], bool, bool]] = []
+    seen_ids: set[str] = set()
+    for choice in choices:
+        message = _get(choice, "message")
+        if message is None:
+            continue
+        fc = _get(message, "function_call")
+        drop_fc = False
+        if fc:
+            # Legacy single function call: never produced when tools= is used.
+            decisions.append(_record(
+                policy, _get(fc, "name") or "", None,
+                Decision(False, caller_error or "unsupported_tool_type"), caller,
+            ))
+            drop_fc = True
+        calls = list(_get(message, "tool_calls") or [])
+        kept = []
+        for call in calls:
+            decision = (
+                Decision(False, caller_error) if caller_error
+                else _decide(policy, call, caller, offered, seen_ids)
+            )
+            fn = _get(call, "function") or {}
+            decisions.append(_record(
+                policy, _get(fn, "name") or _get(call, "type") or "",
+                _get(call, "id"), decision, caller,
+            ))
+            if decision.allowed:
+                kept.append(call)
+        if drop_fc or len(kept) != len(calls):
+            edits.append((choice, message, kept, drop_fc, bool(calls)))
+
+    _save(policy, decisions)
+    if not edits:
         return response
+    # Remove what was denied, from the same objects that were checked.
+    for choice, message, kept, drop_fc, had_calls in edits:
+        if drop_fc:
+            _set(message, "function_call", None)
+        if had_calls:
+            _set(message, "tool_calls", kept or None)
+        if not kept and _get(choice, "finish_reason") in ("tool_calls", "function_call"):
+            _set(choice, "finish_reason", "stop")
+    if policy.on_denied == "raise":
+        raise ToolCallDenied([d for d in decisions if not d.allowed], decisions, response)
+    return response
 
-    def _save(self, decisions: list[DecisionRecord]) -> None:
-        if self.policy.on_decision is None:
-            return
-        for record in decisions:
-            try:
-                result = self.policy.on_decision(record)
-            except Exception as exc:
-                raise DecisionNotRecorded(
-                    "on_decision failed, so the reply was withheld and no tool call ran"
-                ) from exc
-            if inspect.isawaitable(result):
-                if inspect.iscoroutine(result):
-                    result.close()
-                raise DecisionNotRecorded("on_decision returned an awaitable; it must "
-                                          "save the record before it returns")
 
-    def _decide(self, call: Any, caller: Caller | None, offered: dict,
-                seen_ids: set[str]) -> Decision:
-        if _get(call, "type", "function") != "function":
-            return Decision(False, "unsupported_tool_type")
-        call_id = _get(call, "id")
-        if not isinstance(call_id, str) or not call_id:
-            return Decision(False, "missing_tool_call_id")
-        if call_id in seen_ids:
-            return Decision(False, "duplicate_tool_call_id")
-        seen_ids.add(call_id)
-        fn = _get(call, "function") or {}
-        name = _get(fn, "name")
-        if not isinstance(name, str):
-            return Decision(False, "unknown_tool")
-        arguments = _parse_arguments(_get(fn, "arguments"))
-        parsed = _get(fn, "parsed_arguments")
-        if parsed is not None and _dump(parsed) != arguments:
-            # parse() built parsed_arguments with the app's models, and a validator changed
-            # a value. The app would run something other than what was checked.
-            return Decision(False, "parsed_arguments_changed")
-        request = ActionRequest(
-            workspace_id=_SCOPE,
-            agent_workspace_id=_SCOPE,
-            agent_tools=list(offered),
-            tool_name=name,
-            arguments=arguments,
-            caller=caller,
-            tool_call_id=call_id,
-        )
-        return check_action(
-            request, operator_tools=list(self.policy.allow), tools=offered,
-            config=self.policy.config,
-        )
+def _save(policy: Policy, decisions: list[DecisionRecord]) -> None:
+    if policy.on_decision is None:
+        return
+    for record in decisions:
+        try:
+            result = policy.on_decision(record)
+        except Exception as exc:
+            raise DecisionNotRecorded(
+                "on_decision failed, so the reply was withheld and no tool call ran"
+            ) from exc
+        if inspect.isawaitable(result):
+            if inspect.iscoroutine(result):
+                result.close()
+            raise DecisionNotRecorded("on_decision returned an awaitable; it must "
+                                      "save the record before it returns")
 
-    def _record(self, tool: str, call_id: Any, decision: Decision,
-                caller: Caller | None) -> DecisionRecord:
-        return DecisionRecord(
-            tool=str(tool)[:120],
-            tool_call_id=call_id if isinstance(call_id, str) else None,
-            allowed=decision.allowed,
-            reason=decision.reason,
-            caller_subject=caller.subject if caller else None,
-            policy_version=POLICY_VERSION,
-            decided_at=datetime.now(UTC).isoformat(),
-            policy_digest=self.policy.policy_digest,
-        )
+
+def _decide(policy: Policy, call: Any, caller: Caller | None, offered: dict,
+            seen_ids: set[str]) -> Decision:
+    if _get(call, "type", "function") != "function":
+        return Decision(False, "unsupported_tool_type")
+    call_id = _get(call, "id")
+    if not isinstance(call_id, str) or not call_id:
+        return Decision(False, "missing_tool_call_id")
+    if call_id in seen_ids:
+        return Decision(False, "duplicate_tool_call_id")
+    seen_ids.add(call_id)
+    fn = _get(call, "function") or {}
+    name = _get(fn, "name")
+    if not isinstance(name, str):
+        return Decision(False, "unknown_tool")
+    arguments = _parse_arguments(_get(fn, "arguments"))
+    parsed = _get(fn, "parsed_arguments")
+    if parsed is not None and _dump(parsed) != arguments:
+        # parse() built parsed_arguments with the app's models, and a validator changed
+        # a value. The app would run something other than what was checked.
+        return Decision(False, "parsed_arguments_changed")
+    request = ActionRequest(
+        workspace_id=_SCOPE,
+        agent_workspace_id=_SCOPE,
+        agent_tools=list(offered),
+        tool_name=name,
+        arguments=arguments,
+        caller=caller,
+        tool_call_id=call_id,
+    )
+    return check_action(
+        request, operator_tools=list(policy.allow), tools=offered,
+        config=policy.config,
+    )
+
+
+def _record(policy: Policy, tool: str, call_id: Any, decision: Decision,
+            caller: Caller | None) -> DecisionRecord:
+    return DecisionRecord(
+        tool=str(tool)[:120],
+        tool_call_id=call_id if isinstance(call_id, str) else None,
+        allowed=decision.allowed,
+        reason=decision.reason,
+        caller_subject=caller.subject if caller else None,
+        policy_version=POLICY_VERSION,
+        decided_at=datetime.now(UTC).isoformat(),
+        policy_digest=policy.policy_digest,
+    )
 
 
 # ── the wrapper objects ──────────────────────────────────────────────────────
