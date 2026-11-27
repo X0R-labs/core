@@ -6,13 +6,17 @@ import base64
 import json
 import math
 import os
+import signal
 import stat
 import sys
 from collections.abc import Callable
-from contextlib import asynccontextmanager
-from dataclasses import asdict, dataclass
+from concurrent.futures import Future
+from contextlib import asynccontextmanager, suppress
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import Thread
+from uuid import uuid4
 
 from x0r_guard.engine import (
     POLICY_VERSION,
@@ -35,9 +39,16 @@ from x0r_guard.policy_file import PolicyFile
 from x0r_guard.sdk import DecisionRecord
 
 LINE_LIMIT = 8 * 1024 * 1024
+SINK_TIMEOUT = 10
+SHUTDOWN_TIMEOUT = 2
 RESOURCE_METHODS = {"resources/list", "resources/read", "resources/templates/list"}
 PROMPT_METHODS = {"prompts/list", "prompts/get"}
 PASSTHROUGH = {"initialize", "ping", "tools/list"} | RESOURCE_METHODS | PROMPT_METHODS
+CLIENT_NOTIFICATIONS = {
+    "notifications/initialized", "notifications/cancelled", "notifications/progress",
+    "notifications/roots/list_changed",
+}
+SERVER_REQUESTS = {"ping", "sampling/createMessage", "roots/list", "elicitation/create"}
 
 
 @dataclass(frozen=True)
@@ -45,6 +56,12 @@ class Tool:
     name: str
     parameters: dict
     authorize: Authorizer | None
+
+
+@dataclass(frozen=True)
+class ToolListing:
+    generation: int
+    first_page: bool
 
 
 def schema_checkable(schema: object) -> bool:
@@ -106,6 +123,24 @@ def append_decision(path: Path, record: DecisionRecord) -> None:
         file.write(json.dumps(asdict(record)) + "\n")
 
 
+async def save_decision(sink: Callable[[DecisionRecord], None], record: DecisionRecord) -> None:
+    result: Future[None] = Future()
+
+    def save() -> None:
+        if not result.set_running_or_notify_cancel():
+            return
+        try:
+            sink(record)
+        except BaseException as exc:
+            result.set_exception(exc)
+        else:
+            result.set_result(None)
+
+    # A blocked sink must not hold up event loop shutdown.
+    Thread(target=save, daemon=True).start()
+    await asyncio.wait_for(asyncio.wrap_future(result), SINK_TIMEOUT)
+
+
 def decode(line: bytes) -> dict:
     message = json.loads(line)
     if not isinstance(message, dict) or message.get("jsonrpc") != "2.0":
@@ -146,24 +181,24 @@ async def upstream(command: list[str]):
     child = await asyncio.create_subprocess_exec(
         *command, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
         env={name: value for name, value in os.environ.items() if not name.startswith("X0R_")},
-        limit=LINE_LIMIT,
+        limit=LINE_LIMIT, start_new_session=True,
     )
     try:
         yield child
     finally:
         child.stdin.close()
-        if child.returncode is None:
-            try:
-                child.terminate()
-            except ProcessLookupError:
-                pass
+        with suppress(ProcessLookupError):
+            os.killpg(child.pid, signal.SIGTERM)
         # Drain remaining pipe data so asyncio can reap a child that was blocked writing.
+        drain = asyncio.create_task(child.communicate())
         try:
-            await asyncio.wait_for(child.communicate(), 2)
-        except TimeoutError:
-            if child.returncode is None:
-                child.kill()
-            await child.communicate()
+            with suppress(TimeoutError):
+                await asyncio.wait_for(asyncio.shield(drain), SHUTDOWN_TIMEOUT)
+        finally:
+            with suppress(ProcessLookupError):
+                os.killpg(child.pid, signal.SIGKILL)
+            with suppress(TimeoutError):
+                await asyncio.wait_for(drain, SHUTDOWN_TIMEOUT)
 
 
 @asynccontextmanager
@@ -201,13 +236,25 @@ class Proxy:
         self.block_resources = block_resources
         self.block_prompts = block_prompts
         self.tools: dict[str, Tool | None] = {}
-        self.pending: dict[str | int | None, str] = {}
+        self.tools_generation = 0
+        self.pending: dict[str | int | None, ToolListing | None] = {}
+
+    async def record_decision(self, record: DecisionRecord) -> bool:
+        saved = True
+        for sink in self.sinks:
+            try:
+                await save_decision(sink, record)
+            except Exception:  # A sink failure must stop execution.
+                print("mcp-proxy: could not save decision", file=sys.stderr)
+                saved = False
+        return saved
 
     async def decide(self, message: dict) -> Decision:
         params = message.get("params")
         params = params if isinstance(params, dict) else {}
         name = params.get("name")
         name = name if isinstance(name, str) and name else None
+        tool = self.tools.get(name) if name is not None else None
         call_id = str(message["id"]) if "id" in message else None
         caller = None
         try:
@@ -223,7 +270,6 @@ class Proxy:
             elif name in self.tools and self.tools[name] is None:
                 decision = Decision(False, "invalid_arguments")
             else:
-                tool = self.tools.get(name)
                 decision = check_action(
                     ActionRequest("mcp", "mcp", {name}, name, params.get("arguments", {}),
                                   caller=caller, tool_call_id=call_id),
@@ -236,19 +282,27 @@ class Proxy:
             caller_subject=caller.subject if caller else None, policy_version=POLICY_VERSION,
             decided_at=datetime.now(UTC).isoformat(), policy_digest=self.policy.digest,
         )
-        failed = False
-        for sink in self.sinks:
-            try:
-                await asyncio.to_thread(sink, record)
-            except Exception:  # A sink failure must stop execution.
-                print("mcp-proxy: could not save decision", file=sys.stderr)
-                failed = True
-        return Decision(False, "decision_not_recorded") if failed else decision
+        if not await self.record_decision(record):
+            return Decision(False, "decision_not_recorded")
+        if decision.allowed and self.tools.get(name) is not tool:
+            decision = Decision(False, "tools_changed")
+            if not await self.record_decision(replace(
+                record, allowed=False, reason=decision.reason,
+                decision_id=str(uuid4()),
+                decided_at=datetime.now(UTC).isoformat(),
+            )):
+                return Decision(False, "decision_not_recorded")
+        return decision
 
     async def accept_client(self, message: dict) -> bool:
         method = message.get("method")
         if method is None:
             return True
+        if "id" not in message:
+            if method in CLIENT_NOTIFICATIONS:
+                return True
+            print(f"mcp-proxy: dropped client notification {method!r}", file=sys.stderr)
+            return False
         if method == "tools/call":
             decision = await self.decide(message)
             if not decision.allowed:
@@ -258,41 +312,58 @@ class Proxy:
                 })
                 return False
         else:
-            notification = "id" not in message and method.startswith("notifications/")
             if (
-                (method not in PASSTHROUGH and not notification)
+                method not in PASSTHROUGH
                 or (self.block_resources and method in RESOURCE_METHODS)
                 or (self.block_prompts and method in PROMPT_METHODS)
             ):
                 reply(message, error={"code": -32601, "message": "Method not available"})
                 return False
-            if "id" in message and message["id"] in self.pending:
+            if message["id"] in self.pending:
                 reply(message, error={"code": -32600, "message": "Request id already in use"})
                 return False
-        if "id" in message:
-            self.pending[message["id"]] = method
+        listing = None
+        if method == "tools/list":
+            params = message.get("params")
+            first_page = not isinstance(params, dict) or params.get("cursor") is None
+            listing = ToolListing(self.tools_generation, first_page)
+        self.pending[message["id"]] = listing
         return True
 
-    def accept_server(self, message: dict) -> None:
+    def accept_server(self, message: dict) -> dict | None:
         if "method" in message:
-            if message["method"] == "notifications/tools/list_changed":
+            method = message["method"]
+            if "id" in message:
+                if method not in SERVER_REQUESTS:
+                    return {
+                        "jsonrpc": "2.0", "id": message["id"],
+                        "error": {"code": -32601, "message": "Method not available"},
+                    }
+            elif method == "notifications/tools/list_changed":
+                self.tools_generation += 1
                 self.tools.clear()
         elif "id" in message:
-            method = self.pending.pop(message["id"], None)
-            if method == "tools/list" and "result" in message:
+            listing = self.pending.pop(message["id"], None)
+            if listing is not None and "result" in message:
                 result = message["result"]
+                entries = tool_entries(result)
+                current = listing.generation == self.tools_generation
+                if current and listing.first_page:
+                    self.tools.clear()
                 visible = []
-                for entry in tool_entries(result):
+                for entry in entries:
                     name = entry["name"]
                     if name in self.policy.allow:
-                        schema = entry.get("inputSchema")
-                        self.tools[name] = (
-                            Tool(name, schema, self.policy.rules.get(name))
-                            if schema_checkable(schema) else None
-                        )
                         visible.append(entry)
+                        if current:
+                            schema = entry.get("inputSchema")
+                            self.tools[name] = (
+                                Tool(name, schema, self.policy.rules.get(name))
+                                if schema_checkable(schema) else None
+                            )
                 result["tools"] = visible
         write_client(message)
+        return None
 
     async def run(self, command: list[str]) -> int:
         async with upstream(command) as child, client_reader() as readline:
@@ -306,7 +377,10 @@ class Proxy:
 
             async def send_responses():
                 while line := await child.stdout.readline():
-                    self.accept_server(decode(line))
+                    error = self.accept_server(decode(line))
+                    if error is not None:
+                        child.stdin.write(encode(error))
+                        await child.stdin.drain()
 
             requests = asyncio.create_task(send_requests())
             responses = asyncio.create_task(send_responses())

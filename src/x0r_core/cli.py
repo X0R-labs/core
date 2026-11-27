@@ -50,7 +50,7 @@ def mcp_proxy(
                 api_key = os.environ.get("X0R_API_KEY")
                 if not api_key:
                     raise ValueError("--core-url requires X0R_API_KEY")
-                sinks.append(core_sink(core_url, api_key))
+                sinks.append(core_sink(core_url, api_key, source="mcp"))
             if not sinks:
                 raise ValueError("provide --decision-log, --core-url, or both")
             if caller_token_file is not None:

@@ -588,7 +588,7 @@ async def post_policy_decisions(
     for item in sorted(payload.decisions, key=lambda item: item.decision_id):
         rows.append({
             "workspace_id": workspace_id,
-            "source": "sdk",
+            "source": item.source,
             "decision_key": str(item.decision_id),
             "tool": item.tool,
             "tool_call_id": policy_tool_call_id(item.tool_call_id) if item.tool_call_id else None,

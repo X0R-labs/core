@@ -130,6 +130,8 @@ For live use, specify `--decision-log /path/to/decisions.jsonl` to save decision
 locally, `--core-url https://core.example.com` with `X0R_API_KEY` to save them to
 Core, or both. A call is denied if a configured destination fails to save the decision.
 Use `--block-resources` or `--block-prompts` to disable those MCP methods.
+The proxy denies tool calls that include arguments absent from the tool's declared input schema.
+A line larger than 8 MB from either the client or the server ends the proxy session.
 
 If your policy uses caller rules, as the sample TOML policy does, set
 `X0R_CALLER_KEY` to the base64url audience verification key in the MCP client's

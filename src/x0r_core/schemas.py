@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from pydantic import (
@@ -248,6 +248,7 @@ class PolicyDecisionIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     decision_id: UUID
+    source: Literal["sdk", "mcp", "litellm"] = "sdk"
     tool: str = Field(min_length=1, max_length=4096)
     tool_call_id: str | None = Field(default=None, max_length=65536)  # stored hashed
     allowed: StrictBool
